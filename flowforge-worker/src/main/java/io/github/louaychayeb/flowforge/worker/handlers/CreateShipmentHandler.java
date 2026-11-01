@@ -1,4 +1,4 @@
-package io.github.louaychayeb.flowforge.orchestrator.handlers;
+package io.github.louaychayeb.flowforge.worker.handlers;
 
 import io.github.louaychayeb.flowforge.common.step.StepContext;
 import io.github.louaychayeb.flowforge.common.step.StepHandler;
@@ -8,22 +8,22 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Simulated customer notification.
+ * Simulated shipment request.
  */
 @Component
-public class SendConfirmationHandler implements StepHandler {
+public class CreateShipmentHandler implements StepHandler {
 
-    private static final Logger log = LoggerFactory.getLogger(SendConfirmationHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(CreateShipmentHandler.class);
 
     @Override
     public String stepType() {
-        return "SEND_CONFIRMATION";
+        return "CREATE_SHIPMENT";
     }
 
     @Override
     public StepHandlerResult execute(StepContext context) {
         OrderInput order = OrderInput.from(context.input());
-        log.info("Sent confirmation for order {} to customer {}", order.orderId(), order.customerId());
+        log.info("Requested shipment for order {}", order.orderId());
         return StepHandlerResult.succeeded();
     }
 }

@@ -12,7 +12,7 @@ FlowForge is a compact, explicit take on the durable-execution model used by wor
 - leases, retries with backoff, and recovery after process failure
 - saga-style compensation for partially completed business operations
 
-> **Status:** early development — project scaffold in place, Phase 1 (the core engine) in progress. See the [roadmap](#roadmap).
+> **Status:** Phase 1 complete — the core engine runs sequential workflows with persisted state, bounded retries and exponential backoff, executing steps in-process. Kafka-based workers come next. See the [roadmap](#roadmap).
 
 ---
 
@@ -55,41 +55,69 @@ flowchart LR
 
 More detail, including how each failure mode is handled, is in [docs/architecture.md](docs/architecture.md).
 
-## API preview
+## API
 
-Start a run:
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/workflows` | Register a workflow definition; posting an existing name registers its next version |
+| `GET` | `/api/workflows/{name}` | Latest version of a definition |
+| `POST` | `/api/workflows/{name}/runs` | Start a run; returns `202 Accepted` immediately with a `Location` to poll |
+| `GET` | `/api/runs/{runId}` | Run status, every step's state and the full attempt history |
 
-```http
-POST /api/workflows/order-processing/runs
-Content-Type: application/json
+Errors are returned as RFC 9457 problem details (`application/problem+json`).
 
-{ "input": { "orderId": "ORD-1042", "customerId": "CUS-91", "amount": 249.90 } }
+**1. Register a workflow** ([example file](docs/examples/order-processing.json)):
+
+```bash
+curl -X POST localhost:8080/api/workflows -H "Content-Type: application/json" \
+     -d @docs/examples/order-processing.json
+```
+
+**2. Start a run:**
+
+```bash
+curl -i -X POST localhost:8080/api/workflows/order-processing/runs -H "Content-Type: application/json" \
+     -d '{"input": {"orderId": "ORD-1042", "customerId": "CUS-91", "amount": 249.90}}'
 ```
 
 ```json
-{ "runId": "run-8f31", "workflow": "order-processing", "status": "RUNNING" }
+{ "runId": "7c0e…", "workflow": "order-processing", "version": 1, "status": "RUNNING" }
 ```
 
-Query it:
+**3. Follow it:**
 
-```http
-GET /api/runs/run-8f31
+```bash
+curl localhost:8080/api/runs/7c0e…
 ```
 
 ```json
 {
-  "runId": "run-8f31",
-  "status": "RUNNING",
-  "currentStep": "CREATE_SHIPMENT",
+  "runId": "7c0e…",
+  "workflow": "order-processing",
+  "status": "COMPLETED",
+  "currentStep": null,
   "steps": [
-    { "name": "VALIDATE_ORDER",    "status": "COMPLETED" },
-    { "name": "RESERVE_INVENTORY", "status": "COMPLETED" },
-    { "name": "CHARGE_PAYMENT",    "status": "COMPLETED" },
-    { "name": "CREATE_SHIPMENT",   "status": "RUNNING" },
-    { "name": "SEND_CONFIRMATION", "status": "PENDING" }
+    { "name": "validate-order",    "type": "VALIDATE_ORDER",    "status": "COMPLETED", "attemptCount": 1, "attempts": [ … ] },
+    { "name": "reserve-inventory", "type": "RESERVE_INVENTORY", "status": "COMPLETED", "attemptCount": 1, "attempts": [ … ] },
+    { "name": "charge-payment",    "type": "CHARGE_PAYMENT",    "status": "COMPLETED", "attemptCount": 1, "attempts": [ … ] },
+    { "name": "create-shipment",   "type": "CREATE_SHIPMENT",   "status": "COMPLETED", "attemptCount": 1, "attempts": [ … ] },
+    { "name": "send-confirmation", "type": "SEND_CONFIRMATION", "status": "COMPLETED", "attemptCount": 1, "attempts": [ … ] }
   ]
 }
 ```
+
+The sample handlers are simulated. Two inputs show the failure paths: an `amount` of 0 or less fails validation, and an `amount` above 10000 is declined at `charge-payment`. Both are permanent failures, so the run stops there and the later steps stay `PENDING`.
+
+## How a step executes (Phase 1)
+
+1. **Claim:** a dispatcher locks eligible steps with `SELECT … FOR UPDATE SKIP LOCKED`, moves them to `RUNNING` and opens a new attempt row in one short transaction. Concurrent dispatchers skip rows already being claimed, so a step is never claimed twice.
+2. **Execute:** the step handler runs outside any transaction, so a slow step never holds database locks.
+3. **Record:** a second transaction applies the outcome through the state machine:
+   - success makes the next step eligible, or completes the run
+   - a retryable failure schedules a retry with exponential backoff, or fails the run once attempts run out
+   - a permanent failure fails the run immediately
+
+Every state change is validated (`COMPLETED` and `FAILED` are terminal), outcomes must name the attempt they belong to so stale results are rejected, and every entity carries an optimistic-lock version.
 
 ## Tech stack
 
@@ -135,8 +163,14 @@ On Windows use `mvnw.cmd` instead of `./mvnw`.
 
 ```
 flowforge/
-├── flowforge-common/          # Shared message contracts (StepCommand, StepResult)
-├── flowforge-orchestrator/    # REST API, state machine, persistence, outbox, recovery
+├── flowforge-common/          # Shared contracts: StepHandler SPI, StepCommand, StepResult
+├── flowforge-orchestrator/    # REST API, state machine, dispatcher, persistence
+│   └── src/main/java/…/orchestrator/
+│       ├── api/               # Controllers, DTOs, error handling
+│       ├── definition/        # Workflow definitions and versioning
+│       ├── run/               # Runs, step executions, attempts, state machine
+│       ├── engine/            # Dispatcher, claiming, retry policy, handler registry
+│       └── handlers/          # Sample order-processing step handlers
 ├── flowforge-worker/          # Step handlers consuming commands from Kafka
 ├── docs/                      # Architecture and design notes
 ├── docker-compose.yml         # Local PostgreSQL + Kafka + Kafka UI
@@ -146,7 +180,7 @@ flowforge/
 ## Roadmap
 
 - [x] **Phase 0 — Scaffold:** multi-module build, local infrastructure, CI
-- [ ] **Phase 1 — Core engine (no Kafka):** workflow definitions, runs, sequential step execution, explicit state machine, persisted transitions, run status API
+- [x] **Phase 1 — Core engine (no Kafka):** workflow definitions, runs, sequential step execution, explicit state machine, persisted transitions, run status API
 - [ ] **Phase 2 — Asynchronous execution:** move steps to worker processes; commands and results over Kafka; consumer groups and partitioning
 - [ ] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation
 - [ ] **Phase 4 — Concurrency and correctness:** multiple workers on the same workload; prove no double-claiming and no stale-message corruption

@@ -1,7 +1,10 @@
 package io.github.louaychayeb.flowforge.orchestrator.engine;
 
+import io.github.louaychayeb.flowforge.common.messaging.StepOutcome;
+import io.github.louaychayeb.flowforge.common.messaging.StepResult;
 import io.github.louaychayeb.flowforge.orchestrator.IntegrationTest;
 import io.github.louaychayeb.flowforge.orchestrator.TestStepHandlers;
+import io.github.louaychayeb.flowforge.orchestrator.api.RunDtos.AttemptResponse;
 import io.github.louaychayeb.flowforge.orchestrator.api.RunDtos.RunResponse;
 import io.github.louaychayeb.flowforge.orchestrator.api.RunDtos.StepExecutionResponse;
 import io.github.louaychayeb.flowforge.orchestrator.definition.WorkflowDefinitionService;
@@ -9,7 +12,6 @@ import io.github.louaychayeb.flowforge.orchestrator.definition.WorkflowDefinitio
 import io.github.louaychayeb.flowforge.orchestrator.run.AttemptStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.RunStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepStatus;
-import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRunService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -24,7 +26,8 @@ import java.util.concurrent.Future;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end execution through the dispatcher against a real database.
+ * End to end through Kafka: the dispatcher publishes commands, {@code TestWorker} executes them,
+ * and {@link StepResultListener} applies the results — all against real PostgreSQL and Kafka.
  */
 class WorkflowExecutionTest extends IntegrationTest {
 
@@ -32,10 +35,10 @@ class WorkflowExecutionTest extends IntegrationTest {
     WorkflowDefinitionService definitions;
 
     @Autowired
-    WorkflowRunService runs;
+    StepStateService stateService;
 
     @Autowired
-    StepStateService stateService;
+    StepResultListener resultListener;
 
     @Test
     void runsAllStepsInOrderAndCompletes() {
@@ -44,9 +47,8 @@ class WorkflowExecutionTest extends IntegrationTest {
                 new NewStep("second", TestStepHandlers.OK, null),
                 new NewStep("third", TestStepHandlers.OK, null));
 
-        runUntilIdle();
+        RunResponse run = awaitTerminal(runId);
 
-        RunResponse run = load(runId);
         assertThat(run.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(run.completedAt()).isNotNull();
         assertThat(run.currentStep()).isNull();
@@ -60,13 +62,12 @@ class WorkflowExecutionTest extends IntegrationTest {
                 new NewStep("flaky", TestStepHandlers.FLAKY, 3),
                 new NewStep("after", TestStepHandlers.OK, null));
 
-        runUntilIdle();
+        RunResponse run = awaitTerminal(runId);
 
-        RunResponse run = load(runId);
         assertThat(run.status()).isEqualTo(RunStatus.COMPLETED);
         StepExecutionResponse flaky = run.steps().get(0);
         assertThat(flaky.attemptCount()).isEqualTo(3);
-        assertThat(flaky.attempts()).extracting(a -> a.status()).containsExactly(
+        assertThat(flaky.attempts()).extracting(AttemptResponse::status).containsExactly(
                 AttemptStatus.RETRYABLE_FAILURE, AttemptStatus.RETRYABLE_FAILURE, AttemptStatus.SUCCEEDED);
         assertThat(flaky.attempts().get(0).errorMessage()).isEqualTo("flaky failure on attempt 1");
     }
@@ -77,9 +78,8 @@ class WorkflowExecutionTest extends IntegrationTest {
                 new NewStep("unavailable", TestStepHandlers.ALWAYS_RETRYABLE, 2),
                 new NewStep("never-runs", TestStepHandlers.OK, null));
 
-        runUntilIdle();
+        RunResponse run = awaitTerminal(runId);
 
-        RunResponse run = load(runId);
         assertThat(run.status()).isEqualTo(RunStatus.FAILED);
         assertThat(run.steps().get(0).status()).isEqualTo(StepStatus.FAILED);
         assertThat(run.steps().get(0).attemptCount()).isEqualTo(2);
@@ -91,9 +91,8 @@ class WorkflowExecutionTest extends IntegrationTest {
     void doesNotRetryPermanentFailures() {
         UUID runId = startRun(new NewStep("rejected", TestStepHandlers.PERMANENT, 5));
 
-        runUntilIdle();
+        RunResponse run = awaitTerminal(runId);
 
-        RunResponse run = load(runId);
         assertThat(run.status()).isEqualTo(RunStatus.FAILED);
         assertThat(run.steps().get(0).attemptCount()).isEqualTo(1);
         assertThat(run.steps().get(0).attempts().get(0).status()).isEqualTo(AttemptStatus.PERMANENT_FAILURE);
@@ -103,13 +102,41 @@ class WorkflowExecutionTest extends IntegrationTest {
     void treatsHandlerExceptionsAsRetryable() {
         UUID runId = startRun(new NewStep("explodes", TestStepHandlers.THROWS, 2));
 
-        runUntilIdle();
+        RunResponse run = awaitTerminal(runId);
 
-        RunResponse run = load(runId);
         assertThat(run.status()).isEqualTo(RunStatus.FAILED);
-        assertThat(run.steps().get(0).attempts()).extracting(a -> a.status())
+        assertThat(run.steps().get(0).attempts()).extracting(AttemptResponse::status)
                 .containsOnly(AttemptStatus.RETRYABLE_FAILURE);
         assertThat(run.steps().get(0).attempts().get(0).errorMessage()).contains("boom");
+    }
+
+    @Test
+    void failsStepsNoWorkerCanHandle() {
+        UUID runId = startRun(new NewStep("mystery", "LAUNCH_ROCKET", 3));
+
+        RunResponse run = awaitTerminal(runId);
+
+        assertThat(run.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(run.steps().get(0).attemptCount()).isEqualTo(1);
+        assertThat(run.steps().get(0).attempts().get(0).errorMessage())
+                .isEqualTo("No handler registered for step type LAUNCH_ROCKET");
+    }
+
+    @Test
+    void ignoresDuplicateAndStaleResults() {
+        UUID runId = startRun(
+                new NewStep("flaky", TestStepHandlers.FLAKY, 3),
+                new NewStep("after", TestStepHandlers.OK, null));
+        RunResponse before = awaitTerminal(runId);
+        UUID flakyStep = before.steps().get(0).stepExecutionId();
+
+        // A redelivered success for the final attempt, and a late failure for a superseded attempt.
+        resultListener.onResult(new StepResult(UUID.randomUUID(), runId, flakyStep, 3, StepOutcome.SUCCEEDED, null));
+        resultListener.onResult(new StepResult(UUID.randomUUID(), runId, flakyStep, 1,
+                StepOutcome.PERMANENT_FAILURE, "late"));
+
+        RunResponse after = runService.find(runId, RunResponse::from);
+        assertThat(after).isEqualTo(before);
     }
 
     @Test
@@ -144,10 +171,6 @@ class WorkflowExecutionTest extends IntegrationTest {
     private UUID startRun(NewStep... steps) {
         String name = uniqueWorkflowName();
         definitions.register(name, List.of(steps));
-        return runs.start(name, Map.of("orderId", "ORD-1")).getId();
-    }
-
-    private RunResponse load(UUID runId) {
-        return runs.find(runId, RunResponse::from);
+        return runService.start(name, Map.of("orderId", "ORD-1")).getId();
     }
 }

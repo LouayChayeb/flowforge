@@ -37,6 +37,18 @@ stateDiagram-v2
 
 Every transition is validated. A terminal state (`COMPLETED`, `FAILED`) can never be left, so an old or duplicated message cannot move a completed step back to `RUNNING`. Transitions are applied with optimistic locking (a `version` column) or conditional updates (`UPDATE ... WHERE status = ? AND attempt = ?`).
 
+## Dispatching (Phase 1)
+
+A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attempt_at <= now`. Only the run's current step ever has a `next_attempt_at`, which is what keeps execution sequential. The dispatcher polls every 500 ms (`flowforge.engine.dispatcher.poll-interval-ms`) and runs each attempt in three phases:
+
+1. **Claim** (transaction 1): `SELECT … FOR UPDATE SKIP LOCKED`, transition to `RUNNING`, insert a `step_attempt` row.
+2. **Execute** (no transaction): call the `StepHandler` for the step type. Exceptions count as retryable failures.
+3. **Record** (transaction 2): apply the outcome. The attempt number must match the step's current attempt, otherwise the outcome is discarded as stale.
+
+Retry backoff is `initial-backoff * multiplier^(attempt-1)`, capped at `max-backoff` (defaults: 1 s, ×2, 1 min), configured under `flowforge.engine.retry`.
+
+**Known gap, closed in Phase 3:** if the process dies between claim and record, the step stays `RUNNING`. Leases and a recovery sweeper will detect and reschedule such steps.
+
 ## Messages
 
 `StepCommand` (orchestrator → worker):
@@ -60,7 +72,7 @@ Messages are keyed by `runId`, so all messages of one run land on the same parti
 | Database commits but the Kafka publish fails | **Transactional outbox:** the state change and an outbox row are written in one transaction; a publisher sends outbox rows and marks them published. Publishing may repeat, so consumers must tolerate duplicates. | 3 |
 | Kafka delivers a message more than once | **Idempotent processing:** results are matched on `stepExecutionId` + `attempt`; a result for an already-terminal step or an older attempt is ignored. External side effects use idempotency keys derived from `stepExecutionId`. | 3 |
 | A worker dies mid-step | **Leases:** a claimed attempt records a lease expiry. A recovery sweeper moves expired `RUNNING` steps to `RETRY_WAIT` and issues a new attempt; results from the stale attempt are rejected. | 3 |
-| A step keeps failing | **Bounded retries:** per-step attempt limits, exponential backoff, retryable vs. permanent error classification, terminal `FAILED` state. | 3 |
+| A step keeps failing | **Bounded retries:** per-step attempt limits, exponential backoff, retryable vs. permanent error classification, terminal `FAILED` state. | 1 |
 | A business operation partially succeeds | **Compensation (saga):** completed steps define compensating actions (e.g. release inventory) run in reverse order; compensation outcomes are recorded. | 3 |
 | Two workers claim the same step | **Concurrency control:** claims are conditional updates; only one can win. Proven with multi-worker tests. | 4 |
 

@@ -1,0 +1,10 @@
+{
+  "name": "order-processing",
+  "steps": [
+    { "name": "validate-order",    "type": "VALIDATE_ORDER",    "maxAttempts": 1 },
+    { "name": "reserve-inventory", "type": "RESERVE_INVENTORY" },
+    { "name": "charge-payment",    "type": "CHARGE_PAYMENT",    "maxAttempts": 5 },
+    { "name": "create-shipment",   "type": "CREATE_SHIPMENT" },
+    { "name": "send-confirmation", "type": "SEND_CONFIRMATION" }
+  ]
+}

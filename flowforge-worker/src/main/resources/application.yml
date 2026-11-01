@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: flowforge-worker
+  kafka:
+    bootstrap-servers: ${FLOWFORGE_KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      group-id: flowforge-workers
+      # Offsets are committed only after a step result is published (at-least-once).
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true

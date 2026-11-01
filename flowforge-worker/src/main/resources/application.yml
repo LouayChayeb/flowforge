@@ -4,10 +4,27 @@ spring:
   kafka:
     bootstrap-servers: ${FLOWFORGE_KAFKA_BOOTSTRAP:localhost:9092}
     consumer:
+      # All worker instances share one group, so each command is handled by exactly one of them.
       group-id: flowforge-workers
-      # Offsets are committed only after a step result is published (at-least-once).
+      # Offsets are committed by the listener container after each command is processed (at-least-once).
       enable-auto-commit: false
       auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: io.github.louaychayeb.flowforge.common.messaging.StepCommand
+        spring.json.use.type.headers: false
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+    listener:
+      ack-mode: record
+      concurrency: 3
 
 server:
   port: 8081

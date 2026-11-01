@@ -29,7 +29,30 @@
     <properties>
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- 1.21.4 works with Docker Engine 29; the version Spring Boot 3.5.6 manages does not. -->
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
+
+    <profiles>
+        <!--
+            On some Windows machines the JDK cannot create the Unix domain socket it uses internally for
+            NIO selectors in the user's temp folder ("Unable to establish loopback connection"), which breaks
+            Tomcat and the Kafka client. Pointing it at the system temp folder avoids that.
+        -->
+        <profile>
+            <id>windows-nio-tmpdir</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                </os>
+            </activation>
+            <properties>
+                <nio.tmpdir.arg>-Djdk.net.unixdomain.tmpdir=${env.SystemRoot}\Temp</nio.tmpdir.arg>
+                <argLine>${nio.tmpdir.arg}</argLine>
+                <spring-boot.run.jvmArguments>${nio.tmpdir.arg}</spring-boot.run.jvmArguments>
+            </properties>
+        </profile>
+    </profiles>
 
     <dependencyManagement>
         <dependencies>

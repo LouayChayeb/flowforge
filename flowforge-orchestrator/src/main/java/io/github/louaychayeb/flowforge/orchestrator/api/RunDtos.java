@@ -1,0 +1,90 @@
+package io.github.louaychayeb.flowforge.orchestrator.api;
+
+import io.github.louaychayeb.flowforge.orchestrator.run.AttemptStatus;
+import io.github.louaychayeb.flowforge.orchestrator.run.RunStatus;
+import io.github.louaychayeb.flowforge.orchestrator.run.StepAttempt;
+import io.github.louaychayeb.flowforge.orchestrator.run.StepExecution;
+import io.github.louaychayeb.flowforge.orchestrator.run.StepStatus;
+import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRun;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+/**
+ * Response bodies for the run endpoints.
+ */
+public final class RunDtos {
+
+    private RunDtos() {
+    }
+
+    public record RunCreatedResponse(UUID runId, String workflow, int version, RunStatus status) {
+
+        public static RunCreatedResponse from(WorkflowRun run) {
+            return new RunCreatedResponse(run.getId(), run.getDefinition().getName(),
+                    run.getDefinition().getVersion(), run.getStatus());
+        }
+    }
+
+    public record RunResponse(
+            UUID runId,
+            String workflow,
+            int version,
+            RunStatus status,
+            String currentStep,
+            Map<String, Object> input,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant completedAt,
+            List<StepExecutionResponse> steps
+    ) {
+
+        public static RunResponse from(WorkflowRun run) {
+            return new RunResponse(
+                    run.getId(),
+                    run.getDefinition().getName(),
+                    run.getDefinition().getVersion(),
+                    run.getStatus(),
+                    run.currentStep().map(StepExecution::getName).orElse(null),
+                    run.getInput(),
+                    run.getCreatedAt(),
+                    run.getUpdatedAt(),
+                    run.getCompletedAt(),
+                    run.getSteps().stream().map(StepExecutionResponse::from).toList());
+        }
+    }
+
+    public record StepExecutionResponse(
+            UUID stepExecutionId,
+            String name,
+            String type,
+            StepStatus status,
+            int attemptCount,
+            int maxAttempts,
+            Instant nextAttemptAt,
+            List<AttemptResponse> attempts
+    ) {
+
+        public static StepExecutionResponse from(StepExecution step) {
+            return new StepExecutionResponse(step.getId(), step.getName(), step.getStepType(), step.getStatus(),
+                    step.getAttemptCount(), step.getMaxAttempts(), step.getNextAttemptAt(),
+                    step.getAttempts().stream().map(AttemptResponse::from).toList());
+        }
+    }
+
+    public record AttemptResponse(
+            int attempt,
+            AttemptStatus status,
+            Instant startedAt,
+            Instant finishedAt,
+            String errorMessage
+    ) {
+
+        public static AttemptResponse from(StepAttempt attempt) {
+            return new AttemptResponse(attempt.getAttemptNumber(), attempt.getStatus(), attempt.getStartedAt(),
+                    attempt.getFinishedAt(), attempt.getErrorMessage());
+        }
+    }
+}

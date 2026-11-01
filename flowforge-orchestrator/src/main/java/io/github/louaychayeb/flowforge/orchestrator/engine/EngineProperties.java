@@ -8,12 +8,14 @@ import java.time.Duration;
 /**
  * Tuning knobs for the execution engine, bound from {@code flowforge.engine.*}.
  *
- * @param batchSize maximum number of steps a dispatcher claims per poll
- * @param retry     backoff between attempts of a failing step
+ * @param batchSize      maximum number of steps a dispatcher claims per poll
+ * @param publishTimeout how long to wait for Kafka to acknowledge a step command
+ * @param retry          backoff between attempts of a failing step
  */
 @ConfigurationProperties("flowforge.engine")
 public record EngineProperties(
         @DefaultValue("10") int batchSize,
+        @DefaultValue("10s") Duration publishTimeout,
         @DefaultValue Retry retry
 ) {
 

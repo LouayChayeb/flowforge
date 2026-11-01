@@ -1,13 +1,13 @@
 package io.github.louaychayeb.flowforge.orchestrator.engine;
 
-import io.github.louaychayeb.flowforge.common.step.StepContext;
+import io.github.louaychayeb.flowforge.common.messaging.StepCommand;
 
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * A step attempt that has been claimed (moved to {@code RUNNING}) and is ready to execute.
- * Detached from the persistence context so it can be executed outside a transaction.
+ * A step attempt that has been claimed (moved to {@code RUNNING}) and is ready to be sent to a worker.
+ * Detached from the persistence context so it can be published outside a transaction.
  */
 public record ClaimedStep(
         UUID runId,
@@ -18,7 +18,7 @@ public record ClaimedStep(
         Map<String, Object> input
 ) {
 
-    public StepContext toContext() {
-        return new StepContext(runId, stepExecutionId, stepName, attempt, input);
+    public StepCommand toCommand() {
+        return new StepCommand(UUID.randomUUID(), runId, stepExecutionId, stepName, stepType, attempt, input);
     }
 }

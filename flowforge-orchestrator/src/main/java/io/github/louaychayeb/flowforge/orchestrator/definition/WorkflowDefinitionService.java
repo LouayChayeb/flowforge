@@ -1,7 +1,6 @@
 package io.github.louaychayeb.flowforge.orchestrator.definition;
 
 import io.github.louaychayeb.flowforge.orchestrator.api.NotFoundException;
-import io.github.louaychayeb.flowforge.orchestrator.engine.StepHandlerRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,12 +15,10 @@ public class WorkflowDefinitionService {
     public static final int DEFAULT_MAX_ATTEMPTS = 3;
 
     private final WorkflowDefinitionRepository definitions;
-    private final StepHandlerRegistry handlers;
     private final Clock clock;
 
-    public WorkflowDefinitionService(WorkflowDefinitionRepository definitions, StepHandlerRegistry handlers, Clock clock) {
+    public WorkflowDefinitionService(WorkflowDefinitionRepository definitions, Clock clock) {
         this.definitions = definitions;
-        this.handlers = handlers;
         this.clock = clock;
     }
 
@@ -51,15 +48,15 @@ public class WorkflowDefinitionService {
         return definition;
     }
 
+    /**
+     * Step types are not checked here: handlers live in the workers, which the orchestrator does not know.
+     * A step whose type no worker handles fails permanently when it runs.
+     */
     private void validate(List<NewStep> steps) {
         Set<String> names = new HashSet<>();
         for (NewStep step : steps) {
             if (!names.add(step.name())) {
                 throw new InvalidWorkflowDefinitionException("Duplicate step name " + step.name());
-            }
-            if (!handlers.supports(step.type())) {
-                throw new InvalidWorkflowDefinitionException("Unknown step type " + step.type()
-                        + "; supported types are " + handlers.stepTypes());
             }
         }
     }

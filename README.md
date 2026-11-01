@@ -12,7 +12,7 @@ FlowForge is a compact, explicit take on the durable-execution model used by wor
 - leases, retries with backoff, and recovery after process failure
 - saga-style compensation for partially completed business operations
 
-> **Status:** Phase 1 complete — the core engine runs sequential workflows with persisted state, bounded retries and exponential backoff, executing steps in-process. Kafka-based workers come next. See the [roadmap](#roadmap).
+> **Status:** Phase 2 complete — the orchestrator persists workflow state in PostgreSQL and hands steps to separate worker processes over Kafka; any number of workers share the load through a consumer group. Durability and recovery (outbox, leases) come next. See the [roadmap](#roadmap).
 
 ---
 
@@ -108,16 +108,34 @@ curl localhost:8080/api/runs/7c0e…
 
 The sample handlers are simulated. Two inputs show the failure paths: an `amount` of 0 or less fails validation, and an `amount` above 10000 is declined at `charge-payment`. Both are permanent failures, so the run stops there and the later steps stay `PENDING`.
 
-## How a step executes (Phase 1)
+## How a step executes
 
-1. **Claim:** a dispatcher locks eligible steps with `SELECT … FOR UPDATE SKIP LOCKED`, moves them to `RUNNING` and opens a new attempt row in one short transaction. Concurrent dispatchers skip rows already being claimed, so a step is never claimed twice.
-2. **Execute:** the step handler runs outside any transaction, so a slow step never holds database locks.
-3. **Record:** a second transaction applies the outcome through the state machine:
+```mermaid
+sequenceDiagram
+    participant D as Orchestrator<br/>dispatcher
+    participant DB as PostgreSQL
+    participant K as Kafka
+    participant W as Worker
+    participant L as Orchestrator<br/>result listener
+    D->>DB: claim: SELECT … FOR UPDATE SKIP LOCKED,<br/>step → RUNNING, insert attempt
+    D->>K: StepCommand (key = runId)
+    K->>W: deliver to one worker in the group
+    W->>W: run StepHandler
+    W->>K: StepResult
+    W-->>K: commit command offset
+    K->>L: deliver result
+    L->>DB: apply outcome via state machine,<br/>make next step eligible
+```
+
+1. **Claim:** the dispatcher locks eligible steps with `SELECT … FOR UPDATE SKIP LOCKED`, moves them to `RUNNING` and opens an attempt row in one short transaction. Concurrent dispatchers skip rows already being claimed, so a step is never claimed twice.
+2. **Dispatch:** a `StepCommand` goes to `flowforge.step-commands`, keyed by run id so a run's messages stay ordered on one partition. If Kafka does not acknowledge it, the attempt is recorded as a retryable failure instead of being left `RUNNING`.
+3. **Execute:** one worker in the `flowforge-workers` consumer group runs the handler, publishes a `StepResult` to `flowforge.step-results`, and only then commits the command's offset (at-least-once).
+4. **Record:** the orchestrator applies the result through the state machine:
    - success makes the next step eligible, or completes the run
    - a retryable failure schedules a retry with exponential backoff, or fails the run once attempts run out
    - a permanent failure fails the run immediately
 
-Every state change is validated (`COMPLETED` and `FAILED` are terminal), outcomes must name the attempt they belong to so stale results are rejected, and every entity carries an optimistic-lock version.
+Every state change is validated (`COMPLETED` and `FAILED` are terminal), results must name the attempt they belong to, and every entity carries an optimistic-lock version. A duplicated or late result names an attempt that is no longer active, so it is rejected and dropped without touching state.
 
 ## Tech stack
 
@@ -143,14 +161,20 @@ docker compose up -d
 # 2. Build and run all tests
 ./mvnw verify
 
-# 3. Run the orchestrator (http://localhost:8080)
+# 3. Install the modules so each one can be run on its own
+./mvnw install -DskipTests
+
+# 4. Run the orchestrator (http://localhost:8080)
 ./mvnw -pl flowforge-orchestrator spring-boot:run
 
-# 4. Run a worker (http://localhost:8081) — in another terminal
+# 5. Run one or more workers, each in its own terminal
 ./mvnw -pl flowforge-worker spring-boot:run
+./mvnw -pl flowforge-worker spring-boot:run -Dspring-boot.run.arguments=--server.port=8082
 ```
 
-On Windows use `mvnw.cmd` instead of `./mvnw`.
+On Windows use `mvnw.cmd` instead of `./mvnw`. If port 8080 is taken, start the orchestrator with `-Dspring-boot.run.arguments=--server.port=8085`.
+
+Kafka distributes the three partitions of `flowforge.step-commands` across the running workers. Start or stop workers while runs are in progress and watch the partitions rebalance in Kafka UI.
 
 | Service | URL |
 |---|---|
@@ -163,15 +187,15 @@ On Windows use `mvnw.cmd` instead of `./mvnw`.
 
 ```
 flowforge/
-├── flowforge-common/          # Shared contracts: StepHandler SPI, StepCommand, StepResult
+├── flowforge-common/          # Messages (StepCommand, StepResult, Topics), StepHandler SPI, StepCommandProcessor
 ├── flowforge-orchestrator/    # REST API, state machine, dispatcher, persistence
 │   └── src/main/java/…/orchestrator/
 │       ├── api/               # Controllers, DTOs, error handling
 │       ├── definition/        # Workflow definitions and versioning
 │       ├── run/               # Runs, step executions, attempts, state machine
-│       ├── engine/            # Dispatcher, claiming, retry policy, handler registry
-│       └── handlers/          # Sample order-processing step handlers
-├── flowforge-worker/          # Step handlers consuming commands from Kafka
+│       └── engine/            # Claiming, command publishing, result listener, retry policy
+├── flowforge-worker/          # Kafka command listener
+│   └── src/main/java/…/worker/handlers/   # Sample order-processing step handlers
 ├── docs/                      # Architecture and design notes
 ├── docker-compose.yml         # Local PostgreSQL + Kafka + Kafka UI
 └── .github/workflows/ci.yml   # Build and test pipeline
@@ -181,7 +205,7 @@ flowforge/
 
 - [x] **Phase 0 — Scaffold:** multi-module build, local infrastructure, CI
 - [x] **Phase 1 — Core engine (no Kafka):** workflow definitions, runs, sequential step execution, explicit state machine, persisted transitions, run status API
-- [ ] **Phase 2 — Asynchronous execution:** move steps to worker processes; commands and results over Kafka; consumer groups and partitioning
+- [x] **Phase 2 — Asynchronous execution:** move steps to worker processes; commands and results over Kafka; consumer groups and partitioning
 - [ ] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation
 - [ ] **Phase 4 — Concurrency and correctness:** multiple workers on the same workload; prove no double-claiming and no stale-message corruption
 - [ ] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits

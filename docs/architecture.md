@@ -37,40 +37,55 @@ stateDiagram-v2
 
 Every transition is validated. A terminal state (`COMPLETED`, `FAILED`) can never be left, so an old or duplicated message cannot move a completed step back to `RUNNING`. Transitions are applied with optimistic locking (a `version` column) or conditional updates (`UPDATE ... WHERE status = ? AND attempt = ?`).
 
-## Dispatching (Phase 1)
+## Dispatching (Phase 2)
 
-A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attempt_at <= now`. Only the run's current step ever has a `next_attempt_at`, which is what keeps execution sequential. The dispatcher polls every 500 ms (`flowforge.engine.dispatcher.poll-interval-ms`) and runs each attempt in three phases:
+A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attempt_at <= now`. Only the run's current step ever has a `next_attempt_at`, which is what keeps execution sequential. The dispatcher polls every 500 ms (`flowforge.engine.dispatcher.poll-interval-ms`). Each attempt goes through four stages:
 
-1. **Claim** (transaction 1): `SELECT … FOR UPDATE SKIP LOCKED`, transition to `RUNNING`, insert a `step_attempt` row.
-2. **Execute** (no transaction): call the `StepHandler` for the step type. Exceptions count as retryable failures.
-3. **Record** (transaction 2): apply the outcome. The attempt number must match the step's current attempt, otherwise the outcome is discarded as stale.
+1. **Claim** (orchestrator, transaction 1): `SELECT … FOR UPDATE SKIP LOCKED`, transition to `RUNNING`, insert a `step_attempt` row.
+2. **Publish** (orchestrator, no transaction): send a `StepCommand` and wait for Kafka's acknowledgement (`acks=all`, idempotent producer). If it is not acknowledged within `flowforge.engine.publish-timeout`, the attempt is recorded as a retryable failure.
+3. **Execute** (worker): run the `StepHandler` through `StepCommandProcessor`, publish the `StepResult`, then commit the command offset. Unknown step types are permanent failures; exceptions are retryable.
+4. **Record** (orchestrator, transaction 2): apply the result. The attempt number must match the step's current attempt, otherwise the result is discarded as stale.
 
 Retry backoff is `initial-backoff * multiplier^(attempt-1)`, capped at `max-backoff` (defaults: 1 s, ×2, 1 min), configured under `flowforge.engine.retry`.
 
-**Known gap, closed in Phase 3:** if the process dies between claim and record, the step stays `RUNNING`. Leases and a recovery sweeper will detect and reschedule such steps.
+The orchestrator does not validate step types when a definition is registered: handlers live in the workers, which the orchestrator has no registry of. A step whose type no worker handles fails permanently on its first attempt with `No handler registered for step type …`.
+
+**Known gaps, closed in Phase 3:**
+
+- If the orchestrator dies after the claim commits but before the command is published, the step stays `RUNNING` with no command in Kafka. The transactional outbox removes this window.
+- If a worker dies after running a handler but before publishing the result, the command is redelivered and the handler runs again. The orchestrator ignores the duplicate result, but the handler's external side effect happened twice unless the handler is idempotent.
+- A step whose result never arrives stays `RUNNING`. Leases and a recovery sweeper will detect and reschedule it.
 
 ## Messages
 
-`StepCommand` (orchestrator → worker):
+| Topic | Producer → consumer | Payload | Key |
+|---|---|---|---|
+| `flowforge.step-commands` | orchestrator → `flowforge-workers` group | `StepCommand` | run id |
+| `flowforge.step-results` | workers → `flowforge-orchestrator` group | `StepResult` | run id |
+
+Both topics have 3 partitions by default (`flowforge.kafka.partitions`) and are declared by both services, so either can start first. Payloads are JSON without type headers; each consumer knows the one type it reads.
+
+`StepCommand`:
 
 ```json
-{ "eventId": "…", "runId": "…", "stepExecutionId": "…", "stepType": "CREATE_SHIPMENT", "attempt": 1 }
+{ "eventId": "…", "runId": "…", "stepExecutionId": "…", "stepName": "create-shipment",
+  "stepType": "CREATE_SHIPMENT", "attempt": 1, "input": { "orderId": "ORD-1042" } }
 ```
 
-`StepResult` (worker → orchestrator):
+`StepResult`:
 
 ```json
 { "eventId": "…", "runId": "…", "stepExecutionId": "…", "attempt": 1, "outcome": "SUCCEEDED", "errorMessage": null }
 ```
 
-Messages are keyed by `runId`, so all messages of one run land on the same partition and keep their order.
+Keying by run id puts all messages of one run on the same partition, so they are consumed in order.
 
 ## Failure handling
 
 | Failure | Mechanism | Phase |
 |---|---|---|
 | Database commits but the Kafka publish fails | **Transactional outbox:** the state change and an outbox row are written in one transaction; a publisher sends outbox rows and marks them published. Publishing may repeat, so consumers must tolerate duplicates. | 3 |
-| Kafka delivers a message more than once | **Idempotent processing:** results are matched on `stepExecutionId` + `attempt`; a result for an already-terminal step or an older attempt is ignored. External side effects use idempotency keys derived from `stepExecutionId`. | 3 |
+| Kafka delivers a message more than once | **Idempotent processing:** results are matched on `stepExecutionId` + `attempt`; a result for an already-terminal step or an older attempt is ignored. External side effects use idempotency keys derived from `stepExecutionId`. | 2 (duplicate results), 3 (side effects) |
 | A worker dies mid-step | **Leases:** a claimed attempt records a lease expiry. A recovery sweeper moves expired `RUNNING` steps to `RETRY_WAIT` and issues a new attempt; results from the stale attempt are rejected. | 3 |
 | A step keeps failing | **Bounded retries:** per-step attempt limits, exponential backoff, retryable vs. permanent error classification, terminal `FAILED` state. | 1 |
 | A business operation partially succeeds | **Compensation (saga):** completed steps define compensating actions (e.g. release inventory) run in reverse order; compensation outcomes are recorded. | 3 |

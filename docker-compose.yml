@@ -19,7 +19,8 @@ services:
       retries: 10
 
   kafka:
-    image: apache/kafka:3.9.0
+    # Same version as the integration tests.
+    image: apache/kafka:3.8.1
     container_name: flowforge-kafka
     ports:
       - "9092:9092"

@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: flowforge-orchestrator
+  datasource:
+    url: ${FLOWFORGE_DB_URL:jdbc:postgresql://localhost:5432/flowforge}
+    username: ${FLOWFORGE_DB_USER:flowforge}
+    password: ${FLOWFORGE_DB_PASSWORD:flowforge}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema; Hibernate only checks that entities match it.
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true

@@ -12,6 +12,29 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+  kafka:
+    bootstrap-servers: ${FLOWFORGE_KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      group-id: flowforge-orchestrator
+      # Offsets are committed by the listener container after each result is applied (at-least-once).
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: io.github.louaychayeb.flowforge.common.messaging.StepResult
+        spring.json.use.type.headers: false
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+    listener:
+      ack-mode: record
+      concurrency: 3
 
 server:
   port: 8080

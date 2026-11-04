@@ -12,6 +12,11 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+  task:
+    scheduling:
+      pool:
+        # One thread each for dispatching, outbox publishing and lease recovery.
+        size: 3
   kafka:
     bootstrap-servers: ${FLOWFORGE_KAFKA_BOOTSTRAP:localhost:9092}
     consumer:

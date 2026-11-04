@@ -1,5 +1,6 @@
 package io.github.louaychayeb.flowforge.common.messaging;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
@@ -14,6 +15,9 @@ import java.util.UUID;
  * @param stepType         which handler should execute the step, e.g. {@code CHARGE_PAYMENT}
  * @param attempt          attempt number, starting at 1; results from older attempts are stale
  * @param input            the run's input
+ * @param deadline         when the attempt's lease expires; after that the orchestrator times the attempt out,
+ *                         so a worker that receives the command later skips it instead of doing wasted work.
+ *                         {@code null} means no deadline
  */
 public record StepCommand(
         UUID eventId,
@@ -22,6 +26,7 @@ public record StepCommand(
         String stepName,
         String stepType,
         int attempt,
-        Map<String, Object> input
+        Map<String, Object> input,
+        Instant deadline
 ) {
 }

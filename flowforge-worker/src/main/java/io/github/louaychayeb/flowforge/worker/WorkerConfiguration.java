@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
 
+import java.time.Clock;
 import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
@@ -16,7 +17,7 @@ public class WorkerConfiguration {
 
     @Bean
     StepCommandProcessor stepCommandProcessor(List<StepHandler> handlers) {
-        return new StepCommandProcessor(handlers);
+        return new StepCommandProcessor(handlers, Clock.systemUTC());
     }
 
     // Declared by both services so either can start first; creating an existing topic is a no-op.

@@ -2,6 +2,7 @@ package io.github.louaychayeb.flowforge.orchestrator.engine;
 
 import io.github.louaychayeb.flowforge.common.messaging.StepCommand;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
@@ -15,10 +16,12 @@ public record ClaimedStep(
         String stepName,
         String stepType,
         int attempt,
-        Map<String, Object> input
+        Map<String, Object> input,
+        Instant leaseExpiresAt
 ) {
 
     public StepCommand toCommand() {
-        return new StepCommand(UUID.randomUUID(), runId, stepExecutionId, stepName, stepType, attempt, input);
+        return new StepCommand(UUID.randomUUID(), runId, stepExecutionId, stepName, stepType, attempt, input,
+                leaseExpiresAt);
     }
 }

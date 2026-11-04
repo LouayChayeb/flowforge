@@ -21,6 +21,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -93,6 +94,6 @@ class WorkerApplicationTests {
 
     private static StepCommand command(String type, Map<String, Object> input) {
         return new StepCommand(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), type.toLowerCase(), type, 1,
-                input);
+                input, Instant.now().plusSeconds(60));
     }
 }

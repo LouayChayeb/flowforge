@@ -15,6 +15,7 @@ import io.github.louaychayeb.flowforge.orchestrator.run.StepKind;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -38,6 +39,9 @@ class RecoveryTest extends IntegrationTest {
 
     @Autowired
     OutboxEventRepository outbox;
+
+    @Autowired
+    JdbcTemplate jdbc;
 
     @Test
     void commandsSurviveACrashBetweenClaimAndPublish() {
@@ -78,6 +82,27 @@ class RecoveryTest extends IntegrationTest {
         assertThat(run.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(run.steps().get(0).attempts()).extracting(AttemptResponse::status)
                 .containsExactly(AttemptStatus.TIMED_OUT, AttemptStatus.SUCCEEDED);
+    }
+
+    @Test
+    void aStepThatCannotBeRecoveredDoesNotBlockTheOthers() {
+        UUID poisonedRun = startRun(new NewStep("first", TestStepHandlers.OK, null),
+                new NewStep("second", TestStepHandlers.OK, null));
+        UUID poisoned = load(poisonedRun).steps().get(1).stepExecutionId();
+        UUID healthyRun = startRun(new NewStep("lost", TestStepHandlers.OK, 3));
+        dispatcher.dispatchOnce();
+        outbox.deleteAll(outbox.findByMessageKeyAndPublishedAtIsNull(healthyRun.toString()));
+        // Corrupt state recovery cannot handle: a RUNNING step that is not the run's current step, with no attempt.
+        jdbc.update("UPDATE step_execution SET status = 'RUNNING', lease_expires_at = now() - interval '1 hour' "
+                + "WHERE id = ?", poisoned);
+        try {
+            stateService.recoverExpiredLeases(Instant.now().plus(Duration.ofHours(1)));
+
+            assertThat(load(healthyRun).steps().get(0).status()).isEqualTo(StepStatus.RETRY_WAIT);
+        } finally {
+            jdbc.update("UPDATE step_execution SET status = 'PENDING', lease_expires_at = NULL WHERE id = ?",
+                    poisoned);
+        }
     }
 
     @Test

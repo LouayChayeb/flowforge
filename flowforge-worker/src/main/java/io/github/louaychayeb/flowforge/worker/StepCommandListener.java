@@ -12,6 +12,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -45,7 +46,13 @@ public class StepCommandListener {
 
     @KafkaListener(topics = Topics.STEP_COMMANDS)
     public void onCommand(StepCommand command) throws InterruptedException, ExecutionException, TimeoutException {
-        StepResult result = processor.process(command);
+        Optional<StepResult> outcome = processor.process(command);
+        if (outcome.isEmpty()) {
+            log.warn("Skipped step {} ({}) attempt {} of run {}: its deadline {} has passed", command.stepName(),
+                    command.stepType(), command.attempt(), command.runId(), command.deadline());
+            return;
+        }
+        StepResult result = outcome.get();
         crashInjector.afterExecute(command);
         kafka.send(Topics.STEP_RESULTS, command.runId().toString(), result)
                 .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);

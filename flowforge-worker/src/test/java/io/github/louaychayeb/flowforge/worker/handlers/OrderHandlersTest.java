@@ -53,6 +53,25 @@ class OrderHandlersTest {
                 .isEqualTo(StepOutcome.PERMANENT_FAILURE);
     }
 
+    @Test
+    void refusesShipmentsToUnsupportedCountries() {
+        Map<String, Object> nowhere = new HashMap<>(VALID_ORDER);
+        nowhere.put("country", "XX");
+
+        assertThat(new CreateShipmentHandler().execute(context(VALID_ORDER)).outcome())
+                .isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(new CreateShipmentHandler().execute(context(nowhere)).outcome())
+                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+    }
+
+    @Test
+    void compensationsSucceed() {
+        assertThat(new ReleaseInventoryHandler().execute(context(VALID_ORDER)).outcome())
+                .isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(new RefundPaymentHandler().execute(context(VALID_ORDER)).outcome())
+                .isEqualTo(StepOutcome.SUCCEEDED);
+    }
+
     private static StepContext context(Map<String, Object> input) {
         return new StepContext(UUID.randomUUID(), UUID.randomUUID(), "step", 1, input);
     }

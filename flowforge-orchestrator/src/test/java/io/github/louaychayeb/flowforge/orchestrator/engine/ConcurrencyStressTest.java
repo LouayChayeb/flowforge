@@ -51,8 +51,15 @@ import static org.awaitility.Awaitility.await;
  * nothing wrong.
  *
  * <p>The short lease needs its own Spring context (and containers), since every other test uses the default.
+ *
+ * <p>Retries back off as they would in production. The other integration tests retry immediately, for speed;
+ * here that made every burst of timed-out attempts come back as an identical burst, which timed out again,
+ * until some runs exhausted their attempts — the test failed about one time in three.
  */
-@TestPropertySource(properties = "flowforge.engine.lease-duration=" + ConcurrencyStressTest.LEASE)
+@TestPropertySource(properties = {
+        "flowforge.engine.lease-duration=" + ConcurrencyStressTest.LEASE,
+        "flowforge.engine.retry.initial-backoff=250ms",
+        "flowforge.engine.retry.max-backoff=2s"})
 class ConcurrencyStressTest extends IntegrationTest {
 
     static final String LEASE = "1500ms";

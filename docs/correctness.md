@@ -68,11 +68,13 @@ Stress run: 40 runs, attempts=616, timed out=404, retryable failures=22,
 
 ## What the tests found
 
-Writing these tests changed the code twice.
+Writing these tests changed the code twice, and later the test once.
 
 **1. One bad step could block all recovery.** Lease recovery originally expired a whole batch of steps in one transaction. The stress test picked up a deliberately corrupted step from another test, recovering it threw, and the rollback undid the recovery of every other step in the batch — on every tick, forever. Recovery now handles each step in its own transaction and logs a step it cannot recover instead of failing the batch. [`RecoveryTest.aStepThatCannotBeRecoveredDoesNotBlockTheOthers`](../flowforge-orchestrator/src/test/java/io/github/louaychayeb/flowforge/orchestrator/engine/RecoveryTest.java) guards it.
 
 **2. Overload turned into a retry storm.** With 40 runs started at once and deliberately slow workers, commands queued for longer than the lease. Attempts timed out and were retried, and workers kept executing the timed-out commands anyway. Wasted work grew the queue, which caused more timeouts, until runs ran out of attempts. No invariant was broken — every run ended in a consistent, explainable state — but nearly every run ended *wrong*. The fix is load shedding: each `StepCommand` now carries its lease deadline, and workers skip commands that arrive after it. Skipped commands cost nothing, so a backlog drains instead of growing. In the run above, 404 of 616 attempts timed out during the initial burst, and every run still finished correctly.
+
+**3. The test itself retried without backoff.** In Phase 5 the stress test turned out to fail about one run in three, with every invariant intact but some runs `FAILED` after exhausting their attempts. The integration tests retry immediately for speed, so here each burst of timed-out attempts was re-dispatched as an identical burst behind the same 1.5 s lease, and timed out again. That is exactly what exponential backoff exists to prevent, and production defaults to it (1 s, doubling); the stress test now uses 250 ms doubling to 2 s, and passed 5 runs out of 5.
 
 ## Live run
 

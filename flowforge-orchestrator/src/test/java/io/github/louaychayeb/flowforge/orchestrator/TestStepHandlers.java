@@ -5,6 +5,7 @@ import io.github.louaychayeb.flowforge.common.step.StepHandler;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
 
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
 /**
@@ -24,6 +25,10 @@ public final class TestStepHandlers {
     public static final String THROWS = "TEST_THROWS";
     /** Compensation that always succeeds. */
     public static final String UNDO = "TEST_UNDO";
+    /** Fails retryably 30% of the time, at random. */
+    public static final String SOMETIMES = "TEST_SOMETIMES";
+    /** Fails permanently if the run input has {@code "fail": true}, succeeds otherwise. */
+    public static final String FAIL_IF_FLAGGED = "TEST_FAIL_IF_FLAGGED";
 
     private TestStepHandlers() {
     }
@@ -37,6 +42,12 @@ public final class TestStepHandlers {
                 handler(ALWAYS_RETRYABLE, context -> StepHandlerResult.retryableFailure("service unavailable")),
                 handler(PERMANENT, context -> StepHandlerResult.permanentFailure("rejected")),
                 handler(UNDO, context -> StepHandlerResult.succeeded()),
+                handler(SOMETIMES, context -> ThreadLocalRandom.current().nextDouble() < 0.3
+                        ? StepHandlerResult.retryableFailure("random failure")
+                        : StepHandlerResult.succeeded()),
+                handler(FAIL_IF_FLAGGED, context -> Boolean.TRUE.equals(context.input().get("fail"))
+                        ? StepHandlerResult.permanentFailure("flagged to fail")
+                        : StepHandlerResult.succeeded()),
                 handler(THROWS, context -> {
                     throw new IllegalStateException("boom");
                 }));

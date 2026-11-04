@@ -1,0 +1,74 @@
+{{- if .Values.postgresql.enabled }}
+{{- $name := printf "%s-postgresql" (include "flowforge.fullname" .) -}}
+{{- $p := .Values.postgresql -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+    {{- include "flowforge.selector" (list . "postgresql") | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "flowforge.selector" (list . "postgresql") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flowforge.labels" . | nindent 8 }}
+        {{- include "flowforge.selector" (list . "postgresql") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgresql
+          image: {{ $p.image }}
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ $p.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ $p.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flowforge.dbSecret" . }}
+                  key: password
+            # A subdirectory, because the volume root may not be empty.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ $p.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "flowforge.selector" (list . "postgresql") | nindent 4 }}
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+{{- end }}

@@ -1,6 +1,6 @@
 # FlowForge architecture
 
-This document describes the design. Sections are marked with the roadmap phase in which they were implemented; everything up to Phase 4 is in place.
+This document describes the design. Sections are marked with the roadmap phase in which they were implemented; all five phases are in place. Deployment is described in [deploy/README.md](../deploy/README.md), measured behaviour in [performance.md](performance.md).
 
 ## Components
 
@@ -62,7 +62,7 @@ A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attem
 | Loop | Interval (`flowforge.engine.scheduler.*`) | Transaction |
 |---|---|---|
 | **Dispatch** | `dispatch-interval-ms` = 500 | Lock claimable steps; transition to `RUNNING` with `lease_expires_at = now + lease-duration`; insert a `step_attempt`; insert the `StepCommand` into `outbox_event` |
-| **Outbox** | `outbox-interval-ms` = 200 | Lock unpublished outbox rows; send each to Kafka and wait for the ack (`acks=all`, idempotent producer); mark published. Stops at the first failure and retries next tick |
+| **Outbox** | `outbox-interval-ms` = 200 | Lock unpublished outbox rows; send them all to Kafka, then wait for the acks (`acks=all`, idempotent producer, one shared timeout); mark the acknowledged ones published. Failed sends stay pending for the next tick ([performance.md](performance.md)) |
 | **Recovery** | `recovery-interval-ms` = 5000 | Find `RUNNING` steps whose lease expired; for each, in its own transaction, lock it, re-check it, mark the attempt `TIMED_OUT`, and retry or fail the step like any retryable failure |
 
 After the outbox loop, the worker executes: it runs the `StepHandler` through `StepCommandProcessor`, publishes the `StepResult`, and then commits the command offset. Unknown step types are permanent failures; exceptions are retryable. A command that arrives after its `deadline` (the attempt's lease expiry) is skipped, since the orchestrator will time that attempt out anyway. The result listener then locks the step (`SELECT … FOR UPDATE`) and applies the result; the attempt number must match the step's current attempt, otherwise the result is discarded as stale. Because recovery locks the step too, a result and a lease expiry for the same attempt are applied one after the other, and the second is rejected. See [correctness.md](correctness.md).
@@ -102,7 +102,7 @@ Keying by run id puts all messages of one run on the same partition, so they are
 |---|---|---|
 | Database commits but the Kafka publish fails | **Transactional outbox:** the state change and an outbox row are written in one transaction; a publisher sends outbox rows and marks them published. Publishing may repeat, so consumers must tolerate duplicates. | 3 |
 | Kafka delivers a message more than once | **Idempotent processing:** results are matched on `stepExecutionId` + `attempt`; a result for an already-terminal step or an older attempt is ignored. External side effects use idempotency keys derived from `stepExecutionId`. | 2 (duplicate results), 3 (side effects) |
-| A worker dies mid-step | **Redelivery + leases:** the worker's uncommitted command is redelivered to another worker in the group once the dead one leaves (session timeout 10 s). If no result arrives at all, the lease expires and the recovery sweeper times the attempt out and retries; a late result from the timed-out attempt is rejected. | 3 |
+| A worker or orchestrator dies mid-step | **Redelivery + leases:** the dead process's uncommitted command or result is redelivered to another member of its consumer group once the dead one leaves (session timeout 10 s for both). If no result arrives at all, the lease expires and the recovery sweeper times the attempt out and retries; a late result from the timed-out attempt is rejected. | 3 |
 | A step keeps failing | **Bounded retries:** per-step attempt limits, exponential backoff, retryable vs. permanent error classification, terminal `FAILED` state. | 1 |
 | A business operation partially succeeds | **Compensation (saga):** completed steps define compensating actions (e.g. release inventory) run in reverse order; compensation outcomes are recorded. | 3 |
 | Two dispatchers claim the same step, or a result races a lease expiry | **Concurrency control:** claims use `SKIP LOCKED`; results and lease expiries lock the step row. Proven by the lease-race and stress tests and checked by the consistency checker ([correctness.md](correctness.md)). | 4 |

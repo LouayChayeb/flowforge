@@ -12,7 +12,7 @@ FlowForge is a compact, explicit take on the durable-execution model used by wor
 - leases, retries with backoff, and recovery after process failure
 - saga-style compensation for partially completed business operations
 
-> **Status:** Phase 4 complete. Commands go through a transactional outbox, running steps hold leases, failed runs are compensated, and a [consistency checker](docs/correctness.md) verifies ten invariants of the execution history. They hold under a stress test with concurrent engine instances, duplicated and late messages, and lease races, and in a live run with two orchestrators, three workers and a killed worker. See the [crash-recovery demo](docs/recovery-demo.md) and the [roadmap](#roadmap).
+> **Status:** All five phases complete. It runs on Kubernetes from a Helm chart and handles about 40 five-step workflow runs per second (200 step executions/s) on a single 6-CPU Minikube node, with p50 latency around 2 s — see [performance](docs/performance.md). Commands go through a transactional outbox, running steps hold leases, failed runs are compensated, and a [consistency checker](docs/correctness.md) verifies ten invariants of the execution history. They hold under a stress test with concurrent engine instances, duplicated and late messages, and lease races, and in a live run with two orchestrators, three workers and a killed worker. See the [crash-recovery demo](docs/recovery-demo.md) and the [roadmap](#roadmap).
 
 ---
 
@@ -178,7 +178,7 @@ What it does **not** guarantee: an external side effect (a charge, an email) can
 | Testcontainers | Integration tests against real PostgreSQL and Kafka |
 | Docker / Docker Compose | Reproducible local infrastructure and images |
 | Kubernetes + Helm | Deploying, restarting and scaling orchestrator and workers |
-| GitHub Actions | Build and test on every push |
+| GitHub Actions | Tests, Docker image builds and Helm chart lint on every push |
 
 ## Getting started
 
@@ -213,6 +213,14 @@ Kafka distributes the three partitions of `flowforge.step-commands` across the r
 | Kafka UI | http://localhost:8090 |
 | PostgreSQL | `localhost:5432`, db/user/password `flowforge` |
 
+### On Kubernetes
+
+Docker images, a Helm chart and Minikube instructions are in [deploy/README.md](deploy/README.md):
+
+```bash
+helm install flowforge deploy/helm/flowforge -n flowforge --create-namespace --wait
+```
+
 ## Project structure
 
 ```
@@ -228,9 +236,12 @@ flowforge/
 │       └── consistency/       # Invariant checker behind /api/admin/consistency
 ├── flowforge-worker/          # Kafka command listener
 │   └── src/main/java/…/worker/handlers/   # Sample order-processing step handlers
-├── docs/                      # Architecture and design notes
+├── deploy/helm/flowforge/     # Helm chart: orchestrator, workers, PostgreSQL, Kafka
+├── loadtest/                  # Open-model load generator and Kubernetes runner
+├── docs/                      # Architecture, correctness and performance notes
+├── Dockerfile                 # Layered, non-root image for either service
 ├── docker-compose.yml         # Local PostgreSQL + Kafka + Kafka UI
-└── .github/workflows/ci.yml   # Build and test pipeline
+└── .github/workflows/ci.yml   # Tests, image builds, chart lint
 ```
 
 ## Roadmap
@@ -240,7 +251,7 @@ flowforge/
 - [x] **Phase 2 — Asynchronous execution:** move steps to worker processes; commands and results over Kafka; consumer groups and partitioning
 - [x] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation — plus the [crash-recovery demo](docs/recovery-demo.md)
 - [x] **Phase 4 — Concurrency and correctness:** multiple workers and orchestrators on the same workload; a consistency checker, a lease-race test and a chaos stress test prove no double-claiming and no stale-message corruption — see [docs/correctness.md](docs/correctness.md)
-- [ ] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits
+- [x] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits — see [deploy/README.md](deploy/README.md) and [docs/performance.md](docs/performance.md)
 
 ## License
 

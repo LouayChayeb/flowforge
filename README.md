@@ -12,7 +12,7 @@ FlowForge is a compact, explicit take on the durable-execution model used by wor
 - leases, retries with backoff, and recovery after process failure
 - saga-style compensation for partially completed business operations
 
-> **Status:** Phase 2 complete — the orchestrator persists workflow state in PostgreSQL and hands steps to separate worker processes over Kafka; any number of workers share the load through a consumer group. Durability and recovery (outbox, leases) come next. See the [roadmap](#roadmap).
+> **Status:** Phase 3 complete — step commands go through a transactional outbox, running steps hold leases that a recovery sweeper times out, and failed runs compensate their completed steps in reverse order. A worker can be killed mid-step and the run still finishes correctly: see the [crash-recovery demo](docs/recovery-demo.md). See the [roadmap](#roadmap).
 
 ---
 
@@ -106,7 +106,15 @@ curl localhost:8080/api/runs/7c0e…
 }
 ```
 
-The sample handlers are simulated. Two inputs show the failure paths: an `amount` of 0 or less fails validation, and an `amount` above 10000 is declined at `charge-payment`. Both are permanent failures, so the run stops there and the later steps stay `PENDING`.
+The sample handlers are simulated. Three inputs show the failure paths:
+
+| Input | What happens | Final run status |
+|---|---|---|
+| `"amount": 0` | `validate-order` fails permanently; nothing to undo | `FAILED` |
+| `"amount": 50000` | `charge-payment` is declined after inventory was reserved → `RELEASE_INVENTORY` runs | `COMPENSATED` |
+| `"country": "XX"` | `create-shipment` fails after reserve and charge → `REFUND_PAYMENT`, then `RELEASE_INVENTORY` | `COMPENSATED` |
+
+Steps opt into compensation with `"compensateWith": "<STEP_TYPE>"` in the definition. Compensations appear in the run's `steps` with `"kind": "COMPENSATION"`, and go through the same retries and leases as forward steps. If a compensation itself fails, the run ends `COMPENSATION_FAILED` for manual attention.
 
 ## How a step executes
 
@@ -114,28 +122,47 @@ The sample handlers are simulated. Two inputs show the failure paths: an `amount
 sequenceDiagram
     participant D as Orchestrator<br/>dispatcher
     participant DB as PostgreSQL
+    participant P as Orchestrator<br/>outbox publisher
     participant K as Kafka
     participant W as Worker
     participant L as Orchestrator<br/>result listener
-    D->>DB: claim: SELECT … FOR UPDATE SKIP LOCKED,<br/>step → RUNNING, insert attempt
-    D->>K: StepCommand (key = runId)
+    D->>DB: one transaction: lock step (SKIP LOCKED),<br/>step → RUNNING + lease, insert attempt,<br/>insert StepCommand into outbox
+    P->>DB: lock pending outbox rows
+    P->>K: StepCommand (key = runId)
+    P->>DB: mark published
     K->>W: deliver to one worker in the group
     W->>W: run StepHandler
     W->>K: StepResult
     W-->>K: commit command offset
     K->>L: deliver result
-    L->>DB: apply outcome via state machine,<br/>make next step eligible
+    L->>DB: apply outcome via state machine,<br/>release lease, make next step eligible
 ```
 
-1. **Claim:** the dispatcher locks eligible steps with `SELECT … FOR UPDATE SKIP LOCKED`, moves them to `RUNNING` and opens an attempt row in one short transaction. Concurrent dispatchers skip rows already being claimed, so a step is never claimed twice.
-2. **Dispatch:** a `StepCommand` goes to `flowforge.step-commands`, keyed by run id so a run's messages stay ordered on one partition. If Kafka does not acknowledge it, the attempt is recorded as a retryable failure instead of being left `RUNNING`.
+1. **Claim:** the dispatcher locks eligible steps with `SELECT … FOR UPDATE SKIP LOCKED`, moves them to `RUNNING` with a lease, opens an attempt row and writes the `StepCommand` to the **outbox** — all in one transaction. There is no moment where the database says "dispatched" but no command exists.
+2. **Publish:** the outbox publisher sends pending commands to `flowforge.step-commands` (keyed by run id, so a run's messages stay ordered) and marks them published. If Kafka is down, commands wait in the outbox and go out when it is back.
 3. **Execute:** one worker in the `flowforge-workers` consumer group runs the handler, publishes a `StepResult` to `flowforge.step-results`, and only then commits the command's offset (at-least-once).
 4. **Record:** the orchestrator applies the result through the state machine:
    - success makes the next step eligible, or completes the run
-   - a retryable failure schedules a retry with exponential backoff, or fails the run once attempts run out
-   - a permanent failure fails the run immediately
+   - a retryable failure schedules a retry with exponential backoff, or fails the step once attempts run out
+   - a permanent failure fails the step immediately
+   - a failed step compensates the completed steps that declare a compensation, in reverse order
+5. **Recover:** a sweeper times out `RUNNING` steps whose lease expired without a result (worker died, command lost) and retries them like any retryable failure.
 
-Every state change is validated (`COMPLETED` and `FAILED` are terminal), results must name the attempt they belong to, and every entity carries an optimistic-lock version. A duplicated or late result names an attempt that is no longer active, so it is rejected and dropped without touching state.
+Every state change is validated (terminal states can never be left), results must name the attempt they belong to, and every entity carries an optimistic-lock version. A duplicated or late result names an attempt that is no longer active, so it is rejected and dropped without touching state.
+
+## Failure semantics
+
+| What goes wrong | What FlowForge does |
+|---|---|
+| Orchestrator dies between claiming a step and publishing its command | The command was committed to the outbox with the claim; the publisher sends it after restart |
+| Kafka is unavailable | Commands stay in the outbox and are published when it recovers |
+| Outbox publisher sends a command, then dies before marking it published | The command is sent again; the duplicate result is rejected as stale |
+| Worker dies mid-step | Its uncommitted command is redelivered to another worker; if no result arrives, the lease expires and the step is retried |
+| A result arrives twice, or late from a timed-out attempt | Rejected: it does not name the step's active attempt |
+| A step keeps failing | Bounded retries with exponential backoff, then the step fails |
+| A later step fails permanently | Completed steps are compensated in reverse order |
+
+What it does **not** guarantee: an external side effect (a charge, an email) can execute more than once if a worker dies after doing it and before reporting it. Handlers receive a stable `stepExecutionId` to use as an idempotency key with the external system; that is the only way to make such a side effect exactly-once.
 
 ## Tech stack
 
@@ -193,7 +220,8 @@ flowforge/
 │       ├── api/               # Controllers, DTOs, error handling
 │       ├── definition/        # Workflow definitions and versioning
 │       ├── run/               # Runs, step executions, attempts, state machine
-│       └── engine/            # Claiming, command publishing, result listener, retry policy
+│       ├── engine/            # Claiming, result listener, lease recovery, retry policy, scheduler
+│       └── outbox/            # Transactional outbox and its publisher
 ├── flowforge-worker/          # Kafka command listener
 │   └── src/main/java/…/worker/handlers/   # Sample order-processing step handlers
 ├── docs/                      # Architecture and design notes
@@ -206,11 +234,9 @@ flowforge/
 - [x] **Phase 0 — Scaffold:** multi-module build, local infrastructure, CI
 - [x] **Phase 1 — Core engine (no Kafka):** workflow definitions, runs, sequential step execution, explicit state machine, persisted transitions, run status API
 - [x] **Phase 2 — Asynchronous execution:** move steps to worker processes; commands and results over Kafka; consumer groups and partitioning
-- [ ] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation
+- [x] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation — plus the [crash-recovery demo](docs/recovery-demo.md)
 - [ ] **Phase 4 — Concurrency and correctness:** multiple workers on the same workload; prove no double-claiming and no stale-message corruption
 - [ ] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits
-
-**The goal demo:** kill a worker at a carefully chosen point, restart the system, and show that FlowForge recovers without corrupting workflow state or repeating completed operations.
 
 ## License
 

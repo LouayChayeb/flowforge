@@ -31,18 +31,22 @@ public class StepCommandListener {
 
     private final StepCommandProcessor processor;
     private final KafkaTemplate<String, StepResult> kafka;
+    private final CrashInjector crashInjector;
     private final Duration publishTimeout;
 
     public StepCommandListener(StepCommandProcessor processor, KafkaTemplate<String, StepResult> kafka,
+                               CrashInjector crashInjector,
                                @Value("${flowforge.kafka.publish-timeout:10s}") Duration publishTimeout) {
         this.processor = processor;
         this.kafka = kafka;
+        this.crashInjector = crashInjector;
         this.publishTimeout = publishTimeout;
     }
 
     @KafkaListener(topics = Topics.STEP_COMMANDS)
     public void onCommand(StepCommand command) throws InterruptedException, ExecutionException, TimeoutException {
         StepResult result = processor.process(command);
+        crashInjector.afterExecute(command);
         kafka.send(Topics.STEP_RESULTS, command.runId().toString(), result)
                 .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
         log.info("Step {} ({}) attempt {} of run {} -> {}", command.stepName(), command.stepType(),

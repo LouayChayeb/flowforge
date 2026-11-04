@@ -12,6 +12,10 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
+        # A worker that dies without leaving the group is detected after this long, and its partitions
+        # (with any uncommitted commands) move to the remaining workers.
+        session.timeout.ms: 10000
+        heartbeat.interval.ms: 3000
         spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
         spring.json.value.default.type: io.github.louaychayeb.flowforge.common.messaging.StepCommand
         spring.json.use.type.headers: false

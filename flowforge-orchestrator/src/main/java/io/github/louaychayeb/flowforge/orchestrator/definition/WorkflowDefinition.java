@@ -50,7 +50,11 @@ public class WorkflowDefinition {
     }
 
     public void addStep(String stepName, String stepType, int maxAttempts) {
-        steps.add(new StepDefinition(this, steps.size(), stepName, stepType, maxAttempts));
+        addStep(stepName, stepType, maxAttempts, null);
+    }
+
+    public void addStep(String stepName, String stepType, int maxAttempts, String compensationType) {
+        steps.add(new StepDefinition(this, steps.size(), stepName, stepType, maxAttempts, compensationType));
     }
 
     public UUID getId() {

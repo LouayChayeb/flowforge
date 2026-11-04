@@ -22,7 +22,14 @@ public class WorkflowDefinitionService {
         this.clock = clock;
     }
 
-    public record NewStep(String name, String type, Integer maxAttempts) {
+    /**
+     * @param compensationType step type that undoes this step if the run fails later; {@code null} if none
+     */
+    public record NewStep(String name, String type, Integer maxAttempts, String compensationType) {
+
+        public NewStep(String name, String type, Integer maxAttempts) {
+            this(name, type, maxAttempts, null);
+        }
     }
 
     /**
@@ -35,7 +42,7 @@ public class WorkflowDefinitionService {
         WorkflowDefinition definition = new WorkflowDefinition(name, version, clock.instant());
         for (NewStep step : steps) {
             definition.addStep(step.name(), step.type(),
-                    step.maxAttempts() == null ? DEFAULT_MAX_ATTEMPTS : step.maxAttempts());
+                    step.maxAttempts() == null ? DEFAULT_MAX_ATTEMPTS : step.maxAttempts(), step.compensationType());
         }
         return definitions.save(definition);
     }

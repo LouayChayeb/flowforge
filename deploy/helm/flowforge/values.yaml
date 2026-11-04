@@ -1,0 +1,77 @@
+# Images. On Minikube, build them locally and load them with `minikube image load` (see deploy/README.md).
+image:
+  registry: ""          # e.g. ghcr.io/louaychayeb; empty means a local image
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+orchestrator:
+  image: flowforge-orchestrator
+  # Every replica runs the dispatch, outbox and recovery loops; SKIP LOCKED keeps them from colliding.
+  replicas: 2
+  service:
+    type: ClusterIP
+    port: 8080
+  # Passed through verbatim as the Spring properties under flowforge.engine (see docs/architecture.md).
+  engine:
+    batch-size: 10
+    lease-duration: 60s
+    scheduler:
+      dispatch-interval-ms: 500
+      outbox-interval-ms: 200
+      recovery-interval-ms: 5000
+    retry:
+      initial-backoff: 1s
+      max-backoff: 1m
+      multiplier: 2.0
+  # Result-listener threads per replica.
+  listenerConcurrency: 3
+  dbPoolSize: 10
+  extraEnv: []
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 768Mi }
+
+worker:
+  image: flowforge-worker
+  replicas: 3
+  # Consumer threads per replica. Replicas x concurrency above kafka.partitions leaves threads idle.
+  listenerConcurrency: 3
+  # Artificial time per step, standing in for a call to an external service. Used by the load tests.
+  simulatedLatency: 0ms
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  extraEnv: []
+  resources:
+    requests: { cpu: 100m, memory: 384Mi }
+    limits: { memory: 640Mi }
+
+# A single-node Kafka (KRaft) for development clusters. Set enabled: false and externalBootstrap to use your own.
+kafka:
+  enabled: true
+  image: apache/kafka:3.8.1
+  # Upper bound on worker parallelism: each partition is consumed by one thread at a time.
+  partitions: 12
+  externalBootstrap: ""
+  storage: 2Gi
+  resources:
+    requests: { cpu: 250m, memory: 768Mi }
+    limits: { memory: 1Gi }
+
+# A single PostgreSQL instance for development clusters. Set enabled: false and external.* to use your own.
+postgresql:
+  enabled: true
+  image: postgres:16-alpine
+  database: flowforge
+  username: flowforge
+  # Stored in a Secret. Override for anything but a throwaway cluster.
+  password: flowforge
+  existingSecret: ""     # a Secret with key "password"; takes precedence over password
+  storage: 2Gi
+  external:
+    url: ""              # jdbc:postgresql://host:5432/flowforge
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { memory: 512Mi }

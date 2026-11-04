@@ -1,0 +1,9 @@
+apiVersion: v2
+name: flowforge
+description: FlowForge durable workflow engine — orchestrator, workers and (optionally) PostgreSQL and Kafka.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/LouayChayeb/flowforge
+sources:
+  - https://github.com/LouayChayeb/flowforge

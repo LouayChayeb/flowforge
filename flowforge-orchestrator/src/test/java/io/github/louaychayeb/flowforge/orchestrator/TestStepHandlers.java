@@ -22,6 +22,8 @@ public final class TestStepHandlers {
     public static final String PERMANENT = "TEST_PERMANENT";
     /** Always throws. */
     public static final String THROWS = "TEST_THROWS";
+    /** Compensation that always succeeds. */
+    public static final String UNDO = "TEST_UNDO";
 
     private TestStepHandlers() {
     }
@@ -34,6 +36,7 @@ public final class TestStepHandlers {
                         : StepHandlerResult.succeeded()),
                 handler(ALWAYS_RETRYABLE, context -> StepHandlerResult.retryableFailure("service unavailable")),
                 handler(PERMANENT, context -> StepHandlerResult.permanentFailure("rejected")),
+                handler(UNDO, context -> StepHandlerResult.succeeded()),
                 handler(THROWS, context -> {
                     throw new IllegalStateException("boom");
                 }));

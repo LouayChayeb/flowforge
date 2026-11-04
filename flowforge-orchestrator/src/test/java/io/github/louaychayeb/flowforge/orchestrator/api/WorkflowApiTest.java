@@ -28,7 +28,7 @@ class WorkflowApiTest extends IntegrationTest {
             [
               {"name": "validate", "type": "%1$s"},
               {"name": "reserve",  "type": "%1$s"},
-              {"name": "charge",   "type": "%1$s", "maxAttempts": 5}
+              {"name": "charge",   "type": "%1$s", "maxAttempts": 5, "compensateWith": "TEST_UNDO"}
             ]
             """.formatted(TestStepHandlers.OK);
 
@@ -45,7 +45,9 @@ class WorkflowApiTest extends IntegrationTest {
                 .andExpect(jsonPath("$.version").value(1))
                 .andExpect(jsonPath("$.steps.length()").value(3))
                 .andExpect(jsonPath("$.steps[0].maxAttempts").value(3))
-                .andExpect(jsonPath("$.steps[2].maxAttempts").value(5));
+                .andExpect(jsonPath("$.steps[2].maxAttempts").value(5))
+                .andExpect(jsonPath("$.steps[2].compensateWith").value("TEST_UNDO"))
+                .andExpect(jsonPath("$.steps[0].compensateWith").doesNotExist());
         register(name, STEPS).andExpect(jsonPath("$.version").value(2));
 
         mvc.perform(get("/api/workflows/{name}", name))

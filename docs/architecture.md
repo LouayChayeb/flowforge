@@ -1,6 +1,6 @@
 # FlowForge architecture
 
-This document describes the target design. Sections are marked with the roadmap phase in which they are implemented.
+This document describes the design. Sections are marked with the roadmap phase in which they were implemented; everything up to Phase 3 is in place.
 
 ## Components
 
@@ -15,11 +15,29 @@ This document describes the target design. Sections are marked with the roadmap 
 |---|---|
 | `WorkflowDefinition` | Named, versioned list of steps and their order |
 | `WorkflowRun` | One execution of a definition with its input and overall status |
-| `StepExecution` | State of one logical step within a run; stable id across retries |
-| `StepAttempt` | One execution attempt of a step: start/end time, worker, outcome, error |
-| `OutboxEvent` | A message that must be published to Kafka (Phase 3) |
+| `StepExecution` | State of one logical step within a run; stable id across retries. `kind` is `FORWARD` or `COMPENSATION`; while `RUNNING` it holds a lease (`lease_expires_at`) |
+| `StepAttempt` | One execution attempt of a step: start/end time, outcome (`SUCCEEDED`, `RETRYABLE_FAILURE`, `PERMANENT_FAILURE`, `TIMED_OUT`), error |
+| `OutboxEvent` | A Kafka message committed together with the state change that requires it, published afterwards (Phase 3) |
 
 Attempt history is appended, never overwritten, so it is always possible to answer *what failed, when, how many times, and how it recovered*.
+
+## Run state machine (Phase 3)
+
+```mermaid
+stateDiagram-v2
+    [*] --> RUNNING
+    RUNNING --> COMPLETED: last step completed
+    RUNNING --> FAILED: step failed, nothing to compensate
+    RUNNING --> COMPENSATING: step failed after compensable steps completed
+    COMPENSATING --> COMPENSATED: every compensation completed
+    COMPENSATING --> COMPENSATION_FAILED: a compensation failed
+    COMPLETED --> [*]
+    FAILED --> [*]
+    COMPENSATED --> [*]
+    COMPENSATION_FAILED --> [*]
+```
+
+When a forward step fails terminally, the run walks back over the steps before it and, for each `COMPLETED` step with a `compensation_type`, appends a `COMPENSATION` step execution — most recent first. Those run sequentially through the same claim, outbox, lease and retry machinery as forward steps, with the forward step's attempt budget. `COMPENSATION_FAILED` means the system can no longer restore consistency on its own and a human has to look.
 
 ## Step state machine (Phase 1)
 
@@ -35,26 +53,23 @@ stateDiagram-v2
     FAILED --> [*]
 ```
 
-Every transition is validated. A terminal state (`COMPLETED`, `FAILED`) can never be left, so an old or duplicated message cannot move a completed step back to `RUNNING`. Transitions are applied with optimistic locking (a `version` column) or conditional updates (`UPDATE ... WHERE status = ? AND attempt = ?`).
+Every transition is validated. A terminal state (`COMPLETED`, `FAILED`) can never be left, so an old or duplicated message cannot move a completed step back to `RUNNING`. Transitions are applied with optimistic locking (a `lock_version` column) and row locks (`SELECT … FOR UPDATE SKIP LOCKED`).
 
-## Dispatching (Phase 2)
+## Execution loops (Phase 3)
 
-A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attempt_at <= now`. Only the run's current step ever has a `next_attempt_at`, which is what keeps execution sequential. The dispatcher polls every 500 ms (`flowforge.engine.dispatcher.poll-interval-ms`). Each attempt goes through four stages:
+A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attempt_at <= now`. Only the run's current step ever has a `next_attempt_at`, which is what keeps execution sequential. Three scheduled loops drive the engine; each locks its rows with `SKIP LOCKED`, so several orchestrator instances can run them concurrently.
 
-1. **Claim** (orchestrator, transaction 1): `SELECT … FOR UPDATE SKIP LOCKED`, transition to `RUNNING`, insert a `step_attempt` row.
-2. **Publish** (orchestrator, no transaction): send a `StepCommand` and wait for Kafka's acknowledgement (`acks=all`, idempotent producer). If it is not acknowledged within `flowforge.engine.publish-timeout`, the attempt is recorded as a retryable failure.
-3. **Execute** (worker): run the `StepHandler` through `StepCommandProcessor`, publish the `StepResult`, then commit the command offset. Unknown step types are permanent failures; exceptions are retryable.
-4. **Record** (orchestrator, transaction 2): apply the result. The attempt number must match the step's current attempt, otherwise the result is discarded as stale.
+| Loop | Interval (`flowforge.engine.scheduler.*`) | Transaction |
+|---|---|---|
+| **Dispatch** | `dispatch-interval-ms` = 500 | Lock claimable steps; transition to `RUNNING` with `lease_expires_at = now + lease-duration`; insert a `step_attempt`; insert the `StepCommand` into `outbox_event` |
+| **Outbox** | `outbox-interval-ms` = 200 | Lock unpublished outbox rows; send each to Kafka and wait for the ack (`acks=all`, idempotent producer); mark published. Stops at the first failure and retries next tick |
+| **Recovery** | `recovery-interval-ms` = 5000 | Lock `RUNNING` steps whose lease expired; mark the attempt `TIMED_OUT`; retry or fail the step like any retryable failure |
 
-Retry backoff is `initial-backoff * multiplier^(attempt-1)`, capped at `max-backoff` (defaults: 1 s, ×2, 1 min), configured under `flowforge.engine.retry`.
+Between dispatch and outbox, the worker executes: it runs the `StepHandler` through `StepCommandProcessor`, publishes the `StepResult`, and then commits the command offset. Unknown step types are permanent failures; exceptions are retryable. The result listener then applies the result in its own transaction; the attempt number must match the step's current attempt, otherwise the result is discarded as stale.
+
+Retry backoff is `initial-backoff * multiplier^(attempt-1)`, capped at `max-backoff` (defaults: 1 s, ×2, 1 min), configured under `flowforge.engine.retry`. The lease (`flowforge.engine.lease-duration`, default 60 s) must exceed the slowest step plus the time a command can wait in Kafka; a shorter lease causes spurious timeouts, which are safe (the late result is rejected) but waste an attempt.
 
 The orchestrator does not validate step types when a definition is registered: handlers live in the workers, which the orchestrator has no registry of. A step whose type no worker handles fails permanently on its first attempt with `No handler registered for step type …`.
-
-**Known gaps, closed in Phase 3:**
-
-- If the orchestrator dies after the claim commits but before the command is published, the step stays `RUNNING` with no command in Kafka. The transactional outbox removes this window.
-- If a worker dies after running a handler but before publishing the result, the command is redelivered and the handler runs again. The orchestrator ignores the duplicate result, but the handler's external side effect happened twice unless the handler is idempotent.
-- A step whose result never arrives stays `RUNNING`. Leases and a recovery sweeper will detect and reschedule it.
 
 ## Messages
 
@@ -86,7 +101,7 @@ Keying by run id puts all messages of one run on the same partition, so they are
 |---|---|---|
 | Database commits but the Kafka publish fails | **Transactional outbox:** the state change and an outbox row are written in one transaction; a publisher sends outbox rows and marks them published. Publishing may repeat, so consumers must tolerate duplicates. | 3 |
 | Kafka delivers a message more than once | **Idempotent processing:** results are matched on `stepExecutionId` + `attempt`; a result for an already-terminal step or an older attempt is ignored. External side effects use idempotency keys derived from `stepExecutionId`. | 2 (duplicate results), 3 (side effects) |
-| A worker dies mid-step | **Leases:** a claimed attempt records a lease expiry. A recovery sweeper moves expired `RUNNING` steps to `RETRY_WAIT` and issues a new attempt; results from the stale attempt are rejected. | 3 |
+| A worker dies mid-step | **Redelivery + leases:** the worker's uncommitted command is redelivered to another worker in the group once the dead one leaves (session timeout 10 s). If no result arrives at all, the lease expires and the recovery sweeper times the attempt out and retries; a late result from the timed-out attempt is rejected. | 3 |
 | A step keeps failing | **Bounded retries:** per-step attempt limits, exponential backoff, retryable vs. permanent error classification, terminal `FAILED` state. | 1 |
 | A business operation partially succeeds | **Compensation (saga):** completed steps define compensating actions (e.g. release inventory) run in reverse order; compensation outcomes are recorded. | 3 |
 | Two workers claim the same step | **Concurrency control:** claims are conditional updates; only one can win. Proven with multi-worker tests. | 4 |

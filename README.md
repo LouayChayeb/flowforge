@@ -12,7 +12,7 @@ FlowForge is a compact, explicit take on the durable-execution model used by wor
 - leases, retries with backoff, and recovery after process failure
 - saga-style compensation for partially completed business operations
 
-> **Status:** Phase 3 complete — step commands go through a transactional outbox, running steps hold leases that a recovery sweeper times out, and failed runs compensate their completed steps in reverse order. A worker can be killed mid-step and the run still finishes correctly: see the [crash-recovery demo](docs/recovery-demo.md). See the [roadmap](#roadmap).
+> **Status:** Phase 4 complete. Commands go through a transactional outbox, running steps hold leases, failed runs are compensated, and a [consistency checker](docs/correctness.md) verifies ten invariants of the execution history. They hold under a stress test with concurrent engine instances, duplicated and late messages, and lease races, and in a live run with two orchestrators, three workers and a killed worker. See the [crash-recovery demo](docs/recovery-demo.md) and the [roadmap](#roadmap).
 
 ---
 
@@ -63,6 +63,7 @@ More detail, including how each failure mode is handled, is in [docs/architectur
 | `GET` | `/api/workflows/{name}` | Latest version of a definition |
 | `POST` | `/api/workflows/{name}/runs` | Start a run; returns `202 Accepted` immediately with a `Location` to poll |
 | `GET` | `/api/runs/{runId}` | Run status, every step's state and the full attempt history |
+| `GET` | `/api/admin/consistency` | Check the stored history against FlowForge's [invariants](docs/correctness.md); `?workflow=` to narrow it |
 
 Errors are returned as RFC 9457 problem details (`application/problem+json`).
 
@@ -158,6 +159,8 @@ Every state change is validated (terminal states can never be left), results mus
 | Kafka is unavailable | Commands stay in the outbox and are published when it recovers |
 | Outbox publisher sends a command, then dies before marking it published | The command is sent again; the duplicate result is rejected as stale |
 | Worker dies mid-step | Its uncommitted command is redelivered to another worker; if no result arrives, the lease expires and the step is retried |
+| A result and a lease expiry race for the same attempt | Both lock the step row first; exactly one wins, the other is rejected as stale |
+| Workers fall behind and commands outlive their lease | Each command carries its lease deadline; workers skip expired commands instead of doing wasted work |
 | A result arrives twice, or late from a timed-out attempt | Rejected: it does not name the step's active attempt |
 | A step keeps failing | Bounded retries with exponential backoff, then the step fails |
 | A later step fails permanently | Completed steps are compensated in reverse order |
@@ -220,8 +223,9 @@ flowforge/
 │       ├── api/               # Controllers, DTOs, error handling
 │       ├── definition/        # Workflow definitions and versioning
 │       ├── run/               # Runs, step executions, attempts, state machine
-│       ├── engine/            # Claiming, result listener, lease recovery, retry policy, scheduler
-│       └── outbox/            # Transactional outbox and its publisher
+│       ├── engine/            # Claiming, result listener, lease recovery, retry policy, scheduler, metrics
+│       ├── outbox/            # Transactional outbox and its publisher
+│       └── consistency/       # Invariant checker behind /api/admin/consistency
 ├── flowforge-worker/          # Kafka command listener
 │   └── src/main/java/…/worker/handlers/   # Sample order-processing step handlers
 ├── docs/                      # Architecture and design notes
@@ -235,7 +239,7 @@ flowforge/
 - [x] **Phase 1 — Core engine (no Kafka):** workflow definitions, runs, sequential step execution, explicit state machine, persisted transitions, run status API
 - [x] **Phase 2 — Asynchronous execution:** move steps to worker processes; commands and results over Kafka; consumer groups and partitioning
 - [x] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation — plus the [crash-recovery demo](docs/recovery-demo.md)
-- [ ] **Phase 4 — Concurrency and correctness:** multiple workers on the same workload; prove no double-claiming and no stale-message corruption
+- [x] **Phase 4 — Concurrency and correctness:** multiple workers and orchestrators on the same workload; a consistency checker, a lease-race test and a chaos stress test prove no double-claiming and no stale-message corruption — see [docs/correctness.md](docs/correctness.md)
 - [ ] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits
 
 ## License

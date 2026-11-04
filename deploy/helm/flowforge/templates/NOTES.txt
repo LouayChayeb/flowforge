@@ -1,0 +1,9 @@
+FlowForge is starting: {{ .Values.orchestrator.replicas }} orchestrator(s) and {{ if .Values.worker.autoscaling.enabled }}{{ .Values.worker.autoscaling.minReplicas }}-{{ .Values.worker.autoscaling.maxReplicas }}{{ else }}{{ .Values.worker.replicas }}{{ end }} worker(s).
+
+Wait for it:
+  kubectl rollout status deployment/{{ include "flowforge.fullname" . }}-orchestrator -n {{ .Release.Namespace }}
+
+Reach the API:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "flowforge.fullname" . }}-orchestrator 8085:{{ .Values.orchestrator.service.port }}
+  curl localhost:8085/actuator/health
+  curl localhost:8085/api/admin/consistency

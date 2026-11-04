@@ -1,0 +1,102 @@
+{{- $name := printf "%s-orchestrator" (include "flowforge.fullname" .) -}}
+{{- $o := .Values.orchestrator -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+    {{- include "flowforge.selector" (list . "orchestrator") | nindent 4 }}
+spec:
+  replicas: {{ $o.replicas }}
+  selector:
+    matchLabels:
+      {{- include "flowforge.selector" (list . "orchestrator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flowforge.labels" . | nindent 8 }}
+        {{- include "flowforge.selector" (list . "orchestrator") | nindent 8 }}
+    spec:
+      # Service links would inject FLOWFORGE_KAFKA_* variables that Spring could mistake for configuration.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      {{- if .Values.postgresql.enabled }}
+      initContainers:
+        # Flyway migrates on startup, so there is no point starting before the database accepts connections.
+        - name: wait-for-postgresql
+          image: {{ .Values.postgresql.image }}
+          command: ["sh", "-c", "until pg_isready -h {{ include "flowforge.fullname" . }}-postgresql -p 5432; do sleep 2; done"]
+      {{- end }}
+      containers:
+        - name: orchestrator
+          image: {{ include "flowforge.image" (list . $o.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: FLOWFORGE_DB_URL
+              value: {{ include "flowforge.dbUrl" . | quote }}
+            - name: FLOWFORGE_DB_USER
+              value: {{ .Values.postgresql.username | quote }}
+            - name: FLOWFORGE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flowforge.dbSecret" . }}
+                  key: password
+            - name: FLOWFORGE_KAFKA_BOOTSTRAP
+              value: {{ include "flowforge.kafkaBootstrap" . | quote }}
+            # Exact property names, without relying on environment-variable name mangling.
+            - name: SPRING_APPLICATION_JSON
+              value: {{ dict
+                  "flowforge" (dict "engine" $o.engine "kafka" (dict "partitions" .Values.kafka.partitions))
+                  "spring" (dict
+                    "kafka" (dict "listener" (dict "concurrency" $o.listenerConcurrency))
+                    "datasource" (dict "hikari" (dict "maximum-pool-size" $o.dbPoolSize)))
+                | toJson | quote }}
+            {{- with $o.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+          resources:
+            {{- toYaml $o.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+spec:
+  type: {{ $o.service.type }}
+  selector:
+    {{- include "flowforge.selector" (list . "orchestrator") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $o.service.port }}
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "flowforge.selector" (list . "orchestrator") | nindent 6 }}

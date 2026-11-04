@@ -1,5 +1,6 @@
 package io.github.louaychayeb.flowforge.orchestrator.outbox;
 
+import io.github.louaychayeb.flowforge.orchestrator.engine.EngineMetrics;
 import io.github.louaychayeb.flowforge.orchestrator.engine.EngineProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,13 +29,15 @@ public class OutboxPublisher {
     private final OutboxEventRepository events;
     private final KafkaTemplate<String, Object> kafka;
     private final EngineProperties properties;
+    private final EngineMetrics metrics;
     private final Clock clock;
 
     public OutboxPublisher(OutboxEventRepository events, KafkaTemplate<String, Object> kafka,
-                           EngineProperties properties, Clock clock) {
+                           EngineProperties properties, EngineMetrics metrics, Clock clock) {
         this.events = events;
         this.kafka = kafka;
         this.properties = properties;
+        this.metrics = metrics;
         this.clock = clock;
     }
 
@@ -57,13 +60,16 @@ public class OutboxPublisher {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 event.recordFailure("Interrupted while publishing");
+                metrics.outboxFailure();
                 break;
             } catch (ExecutionException | TimeoutException | RuntimeException e) {
                 log.warn("Failed to publish outbox event {} to {}; will retry", event.getId(), event.getTopic(), e);
                 event.recordFailure(e.getClass().getSimpleName() + ": " + e.getMessage());
+                metrics.outboxFailure();
                 break;
             }
         }
+        metrics.outboxPublished(published);
         return published;
     }
 }

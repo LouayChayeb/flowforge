@@ -1,6 +1,8 @@
 package io.github.louaychayeb.flowforge.orchestrator.outbox;
 
+import io.github.louaychayeb.flowforge.orchestrator.engine.EngineMetrics;
 import io.github.louaychayeb.flowforge.orchestrator.engine.EngineProperties;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
@@ -32,7 +34,7 @@ class OutboxPublisherTest {
     private final OutboxPublisher publisher = new OutboxPublisher(repository, kafka,
             new EngineProperties(10, Duration.ofSeconds(1), Duration.ofSeconds(60),
                     new EngineProperties.Retry(Duration.ofSeconds(1), Duration.ofSeconds(10), 2.0)),
-            Clock.fixed(NOW, ZoneOffset.UTC));
+            new EngineMetrics(new SimpleMeterRegistry()), Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final OutboxEvent first = new OutboxEvent("topic", "run-1", Map.of("n", 1), NOW);
     private final OutboxEvent second = new OutboxEvent("topic", "run-2", Map.of("n", 2), NOW);

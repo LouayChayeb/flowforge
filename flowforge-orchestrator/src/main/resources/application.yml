@@ -27,6 +27,10 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
+        # An orchestrator that dies without leaving the group is detected after this long; until then the
+        # results on its partitions wait. Kafka's 45 s default stalled those runs for 45 s (docs/performance.md).
+        session.timeout.ms: 10000
+        heartbeat.interval.ms: 3000
         spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
         spring.json.value.default.type: io.github.louaychayeb.flowforge.common.messaging.StepResult
         spring.json.use.type.headers: false
@@ -43,6 +47,8 @@ spring:
 
 server:
   port: 8080
+  # Finish in-flight requests on SIGTERM (Kubernetes rolling updates).
+  shutdown: graceful
 
 management:
   endpoints:

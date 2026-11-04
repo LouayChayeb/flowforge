@@ -9,7 +9,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -42,31 +44,44 @@ public class OutboxPublisher {
     }
 
     /**
-     * Publishes one batch of pending events. Stops at the first failure so a broker outage does not
-     * produce a burst of timeouts; the failed event stays pending and is retried on the next call.
+     * Publishes one batch of pending events. All sends are issued first and the acknowledgements awaited
+     * afterwards, so a batch costs one broker round trip rather than one per event (Phase 5 found the
+     * one-at-a-time version capping throughput). Events whose send failed or timed out stay pending and are
+     * retried on the next call; the others are marked published.
+     *
+     * <p>Order is still kept where it matters: events of one run share a key, hence a partition, and the
+     * idempotent producer preserves order per partition.
      *
      * @return the number of events published
      */
     @Transactional
     public int publishPending() {
         List<OutboxEvent> pending = events.lockPending(properties.batchSize());
-        int published = 0;
+        List<CompletableFuture<?>> sends = new ArrayList<>(pending.size());
         for (OutboxEvent event : pending) {
             try {
-                kafka.send(event.getTopic(), event.getMessageKey(), event.getPayload())
-                        .get(properties.publishTimeout().toMillis(), TimeUnit.MILLISECONDS);
+                sends.add(kafka.send(event.getTopic(), event.getMessageKey(), event.getPayload()));
+            } catch (RuntimeException e) {
+                sends.add(CompletableFuture.failedFuture(e));
+            }
+        }
+        long deadline = System.nanoTime() + properties.publishTimeout().toNanos();
+        int published = 0;
+        for (int i = 0; i < pending.size(); i++) {
+            OutboxEvent event = pending.get(i);
+            try {
+                sends.get(i).get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
                 event.markPublished(clock.instant());
                 published++;
             } catch (InterruptedException e) {
+                // The remaining events stay pending; Kafka may still deliver them, which consumers tolerate.
                 Thread.currentThread().interrupt();
-                event.recordFailure("Interrupted while publishing");
-                metrics.outboxFailure();
                 break;
-            } catch (ExecutionException | TimeoutException | RuntimeException e) {
-                log.warn("Failed to publish outbox event {} to {}; will retry", event.getId(), event.getTopic(), e);
-                event.recordFailure(e.getClass().getSimpleName() + ": " + e.getMessage());
+            } catch (ExecutionException | TimeoutException e) {
+                Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+                log.warn("Failed to publish outbox event {} to {}; will retry", event.getId(), event.getTopic(), cause);
+                event.recordFailure(cause.getClass().getSimpleName() + ": " + cause.getMessage());
                 metrics.outboxFailure();
-                break;
             }
         }
         metrics.outboxPublished(published);

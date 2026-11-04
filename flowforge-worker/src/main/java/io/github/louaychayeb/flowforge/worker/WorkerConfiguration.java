@@ -10,14 +10,18 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
 public class WorkerConfiguration {
 
     @Bean
-    StepCommandProcessor stepCommandProcessor(List<StepHandler> handlers) {
-        return new StepCommandProcessor(handlers, Clock.systemUTC());
+    StepCommandProcessor stepCommandProcessor(List<StepHandler> handlers,
+                                              @Value("${flowforge.worker.simulated-latency:0ms}") Duration latency) {
+        List<StepHandler> effective = latency.isZero() ? handlers
+                : handlers.stream().<StepHandler>map(handler -> new SimulatedLatency(handler, latency)).toList();
+        return new StepCommandProcessor(effective, Clock.systemUTC());
     }
 
     // Declared by both services so either can start first; creating an existing topic is a no-op.

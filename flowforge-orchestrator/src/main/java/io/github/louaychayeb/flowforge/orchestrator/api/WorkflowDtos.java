@@ -37,7 +37,9 @@ public final class WorkflowDtos {
             @NotBlank @Size(max = 100) String name,
             @NotBlank @Size(max = 100) @Pattern(regexp = STEP_TYPE_PATTERN, message = "must be UPPER_SNAKE_CASE")
             String type,
-            @Min(1) @Max(20) Integer maxAttempts
+            @Min(1) @Max(20) Integer maxAttempts,
+            @Size(max = 100) @Pattern(regexp = STEP_TYPE_PATTERN, message = "must be UPPER_SNAKE_CASE")
+            String compensateWith
     ) {
     }
 
@@ -49,10 +51,11 @@ public final class WorkflowDtos {
         }
     }
 
-    public record StepResponse(String name, String type, int maxAttempts) {
+    public record StepResponse(String name, String type, int maxAttempts, String compensateWith) {
 
         public static StepResponse from(StepDefinition step) {
-            return new StepResponse(step.getName(), step.getStepType(), step.getMaxAttempts());
+            return new StepResponse(step.getName(), step.getStepType(), step.getMaxAttempts(),
+                    step.getCompensationType());
         }
     }
 

@@ -4,6 +4,7 @@ import io.github.louaychayeb.flowforge.orchestrator.run.AttemptStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.RunStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepAttempt;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepExecution;
+import io.github.louaychayeb.flowforge.orchestrator.run.StepKind;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRun;
 
@@ -60,17 +61,19 @@ public final class RunDtos {
             UUID stepExecutionId,
             String name,
             String type,
+            StepKind kind,
             StepStatus status,
             int attemptCount,
             int maxAttempts,
             Instant nextAttemptAt,
+            Instant leaseExpiresAt,
             List<AttemptResponse> attempts
     ) {
 
         public static StepExecutionResponse from(StepExecution step) {
-            return new StepExecutionResponse(step.getId(), step.getName(), step.getStepType(), step.getStatus(),
-                    step.getAttemptCount(), step.getMaxAttempts(), step.getNextAttemptAt(),
-                    step.getAttempts().stream().map(AttemptResponse::from).toList());
+            return new StepExecutionResponse(step.getId(), step.getName(), step.getStepType(), step.getKind(),
+                    step.getStatus(), step.getAttemptCount(), step.getMaxAttempts(), step.getNextAttemptAt(),
+                    step.getLeaseExpiresAt(), step.getAttempts().stream().map(AttemptResponse::from).toList());
         }
     }
 

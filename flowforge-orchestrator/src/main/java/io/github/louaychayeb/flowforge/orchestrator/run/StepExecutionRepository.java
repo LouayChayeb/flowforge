@@ -23,4 +23,17 @@ public interface StepExecutionRepository extends JpaRepository<StepExecution, UU
             FOR UPDATE SKIP LOCKED
             """, nativeQuery = true)
     List<StepExecution> lockClaimable(Instant now, int limit);
+
+    /**
+     * Locks up to {@code limit} running steps whose lease expired before {@code cutoff}.
+     */
+    @Query(value = """
+            SELECT * FROM step_execution
+            WHERE status = 'RUNNING'
+              AND lease_expires_at < :cutoff
+            ORDER BY lease_expires_at
+            LIMIT :limit
+            FOR UPDATE SKIP LOCKED
+            """, nativeQuery = true)
+    List<StepExecution> lockExpiredLeases(Instant cutoff, int limit);
 }

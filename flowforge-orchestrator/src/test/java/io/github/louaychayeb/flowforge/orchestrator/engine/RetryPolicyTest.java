@@ -8,7 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class RetryPolicyTest {
 
-    private final RetryPolicy policy = new RetryPolicy(new EngineProperties(10, Duration.ofSeconds(10),
+    private final RetryPolicy policy = new RetryPolicy(new EngineProperties(10, Duration.ofSeconds(10), Duration.ofSeconds(60),
             new EngineProperties.Retry(Duration.ofSeconds(1), Duration.ofSeconds(10), 2.0)));
 
     @Test

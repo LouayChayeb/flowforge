@@ -30,6 +30,10 @@ import java.util.UUID;
 /**
  * One execution of a {@link WorkflowDefinition}. Steps run strictly in order: only the step at
  * {@code currentPosition} can be eligible, and the run advances when that step completes.
+ *
+ * <p>If a step fails terminally after earlier steps completed, those that declare a compensation are
+ * undone in reverse order (a saga). Compensation steps are appended after the forward steps and run
+ * through the same claim, retry and lease machinery.
  */
 @Entity
 @Table(name = "workflow_run")
@@ -86,33 +90,60 @@ public class WorkflowRun {
         }
         WorkflowRun run = new WorkflowRun(definition, input, now);
         for (StepDefinition stepDefinition : definition.getSteps()) {
-            run.steps.add(new StepExecution(run, stepDefinition, now));
+            run.steps.add(StepExecution.forward(run, stepDefinition, now));
         }
         run.steps.get(0).makeEligible(now);
         return run;
     }
 
     /**
-     * Called by a step once it has completed. Makes the next step eligible, or completes the run.
+     * Called by a step once it has completed. Makes the next step eligible, or ends the run:
+     * {@code COMPLETED} after the last forward step, {@code COMPENSATED} after the last compensation.
      */
     void onStepCompleted(StepExecution step, Instant now) {
         requireCurrent(step);
         int next = step.getPosition() + 1;
         if (next < steps.size()) {
-            currentPosition = next;
-            steps.get(next).makeEligible(now);
-            updatedAt = now;
+            advanceTo(next, now);
         } else {
-            transitionTo(RunStatus.COMPLETED, now);
+            transitionTo(status == RunStatus.COMPENSATING ? RunStatus.COMPENSATED : RunStatus.COMPLETED, now);
         }
     }
 
     /**
-     * Called by a step once it has failed terminally. Fails the run; remaining steps never execute.
+     * Called by a step once it has failed terminally. A failed forward step starts compensation of the
+     * completed steps that declare one, or fails the run if there are none. A failed compensation leaves
+     * the run in {@code COMPENSATION_FAILED}: the system can no longer restore a consistent state by itself.
      */
     void onStepFailed(StepExecution step, Instant now) {
         requireCurrent(step);
-        transitionTo(RunStatus.FAILED, now);
+        if (status == RunStatus.COMPENSATING) {
+            transitionTo(RunStatus.COMPENSATION_FAILED, now);
+            return;
+        }
+        List<StepExecution> toCompensate = new ArrayList<>();
+        for (int i = step.getPosition() - 1; i >= 0; i--) {
+            StepExecution completed = steps.get(i);
+            if (completed.getStatus() == StepStatus.COMPLETED && completed.getCompensationType() != null) {
+                toCompensate.add(completed);
+            }
+        }
+        if (toCompensate.isEmpty()) {
+            transitionTo(RunStatus.FAILED, now);
+            return;
+        }
+        transitionTo(RunStatus.COMPENSATING, now);
+        int firstCompensation = steps.size();
+        for (StepExecution completed : toCompensate) {
+            steps.add(StepExecution.compensation(this, completed, steps.size(), now));
+        }
+        advanceTo(firstCompensation, now);
+    }
+
+    private void advanceTo(int position, Instant now) {
+        currentPosition = position;
+        steps.get(position).makeEligible(now);
+        updatedAt = now;
     }
 
     private void requireCurrent(StepExecution step) {
@@ -128,7 +159,9 @@ public class WorkflowRun {
         }
         status = target;
         updatedAt = now;
-        completedAt = now;
+        if (target.isTerminal()) {
+            completedAt = now;
+        }
     }
 
     /**

@@ -8,14 +8,17 @@ import java.time.Duration;
 /**
  * Tuning knobs for the execution engine, bound from {@code flowforge.engine.*}.
  *
- * @param batchSize      maximum number of steps a dispatcher claims per poll
- * @param publishTimeout how long to wait for Kafka to acknowledge a step command
+ * @param batchSize      maximum number of steps or outbox events handled per poll
+ * @param publishTimeout how long to wait for Kafka to acknowledge an outbox event
+ * @param leaseDuration  how long a claimed attempt may run before it is timed out and retried;
+ *                       must exceed the slowest step plus queueing time
  * @param retry          backoff between attempts of a failing step
  */
 @ConfigurationProperties("flowforge.engine")
 public record EngineProperties(
         @DefaultValue("10") int batchSize,
         @DefaultValue("10s") Duration publishTimeout,
+        @DefaultValue("60s") Duration leaseDuration,
         @DefaultValue Retry retry
 ) {
 

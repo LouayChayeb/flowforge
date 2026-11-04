@@ -27,6 +27,9 @@ import java.util.UUID;
  *
  * <p>All state changes go through {@link StepStatus#canTransitionTo}, and outcomes must name the
  * attempt they belong to, so a late or duplicated outcome cannot overwrite newer state.
+ *
+ * <p>While {@code RUNNING} the step holds a lease. If no outcome arrives before it expires — the worker
+ * died, the command was lost — the attempt is timed out and retried like any retryable failure.
  */
 @Entity
 @Table(name = "step_execution")
@@ -46,6 +49,17 @@ public class StepExecution {
     private String stepType;
 
     @Enumerated(EnumType.STRING)
+    private StepKind kind;
+
+    /** For a forward step: the step type that undoes it, or {@code null}. */
+    private String compensationType;
+
+    /** For a compensation step: the forward step it undoes. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "compensates_step_execution_id")
+    private StepExecution compensates;
+
+    @Enumerated(EnumType.STRING)
     private StepStatus status;
 
     private int attemptCount;
@@ -53,6 +67,8 @@ public class StepExecution {
     private int maxAttempts;
 
     private Instant nextAttemptAt;
+
+    private Instant leaseExpiresAt;
 
     private Instant createdAt;
 
@@ -68,17 +84,36 @@ public class StepExecution {
     protected StepExecution() {
     }
 
-    StepExecution(WorkflowRun run, StepDefinition definition, Instant now) {
+    private StepExecution(WorkflowRun run, int position, String name, String stepType, StepKind kind,
+                          int maxAttempts, Instant now) {
         this.id = UUID.randomUUID();
         this.run = run;
-        this.position = definition.getPosition();
-        this.name = definition.getName();
-        this.stepType = definition.getStepType();
+        this.position = position;
+        this.name = name;
+        this.stepType = stepType;
+        this.kind = kind;
         this.status = StepStatus.PENDING;
         this.attemptCount = 0;
-        this.maxAttempts = definition.getMaxAttempts();
+        this.maxAttempts = maxAttempts;
         this.createdAt = now;
         this.updatedAt = now;
+    }
+
+    static StepExecution forward(WorkflowRun run, StepDefinition definition, Instant now) {
+        StepExecution step = new StepExecution(run, definition.getPosition(), definition.getName(),
+                definition.getStepType(), StepKind.FORWARD, definition.getMaxAttempts(), now);
+        step.compensationType = definition.getCompensationType();
+        return step;
+    }
+
+    /**
+     * A step that undoes {@code completed}, using its compensation type and attempt budget.
+     */
+    static StepExecution compensation(WorkflowRun run, StepExecution completed, int position, Instant now) {
+        StepExecution step = new StepExecution(run, position, completed.getName(), completed.getCompensationType(),
+                StepKind.COMPENSATION, completed.getMaxAttempts(), now);
+        step.compensates = completed;
+        return step;
     }
 
     /**
@@ -93,12 +128,13 @@ public class StepExecution {
     }
 
     /**
-     * Claims the step and opens a new attempt.
+     * Claims the step, opens a new attempt and takes a lease on it until {@code now + leaseDuration}.
      */
-    public StepAttempt start(Instant now) {
+    public StepAttempt start(Instant now, Duration leaseDuration) {
         transitionTo(StepStatus.RUNNING, now);
         attemptCount++;
         nextAttemptAt = null;
+        leaseExpiresAt = now.plus(leaseDuration);
         StepAttempt attempt = new StepAttempt(this, attemptCount, now);
         attempts.add(attempt);
         return attempt;
@@ -112,10 +148,33 @@ public class StepExecution {
 
     /**
      * Records a failure that may succeed on retry. Schedules another attempt after {@code backoff}
-     * if attempts remain; otherwise fails the step and the run.
+     * if attempts remain; otherwise fails the step.
      */
     public void failRetryable(int attemptNumber, String error, Duration backoff, Instant now) {
         activeAttempt(attemptNumber).finish(AttemptStatus.RETRYABLE_FAILURE, error, now);
+        retryOrFail(backoff, now);
+    }
+
+    public void failPermanently(int attemptNumber, String error, Instant now) {
+        activeAttempt(attemptNumber).finish(AttemptStatus.PERMANENT_FAILURE, error, now);
+        transitionTo(StepStatus.FAILED, now);
+        run.onStepFailed(this, now);
+    }
+
+    /**
+     * Times out the active attempt because its lease expired without an outcome. Any outcome that arrives
+     * later for that attempt is stale and will be rejected. Callers decide when a lease counts as expired.
+     */
+    public void expireLease(Duration backoff, Instant now) {
+        if (status != StepStatus.RUNNING) {
+            throw new IllegalStateTransitionException("Step %s holds no lease in status %s".formatted(id, status));
+        }
+        attempts.get(attempts.size() - 1).finish(AttemptStatus.TIMED_OUT,
+                "No result before lease expired at " + leaseExpiresAt, now);
+        retryOrFail(backoff, now);
+    }
+
+    private void retryOrFail(Duration backoff, Instant now) {
         if (attemptCount < maxAttempts) {
             transitionTo(StepStatus.RETRY_WAIT, now);
             nextAttemptAt = now.plus(backoff);
@@ -123,12 +182,6 @@ public class StepExecution {
             transitionTo(StepStatus.FAILED, now);
             run.onStepFailed(this, now);
         }
-    }
-
-    public void failPermanently(int attemptNumber, String error, Instant now) {
-        activeAttempt(attemptNumber).finish(AttemptStatus.PERMANENT_FAILURE, error, now);
-        transitionTo(StepStatus.FAILED, now);
-        run.onStepFailed(this, now);
     }
 
     private StepAttempt activeAttempt(int attemptNumber) {
@@ -144,6 +197,9 @@ public class StepExecution {
         }
         status = target;
         updatedAt = now;
+        if (target != StepStatus.RUNNING) {
+            leaseExpiresAt = null;
+        }
     }
 
     public UUID getId() {
@@ -166,6 +222,14 @@ public class StepExecution {
         return stepType;
     }
 
+    public StepKind getKind() {
+        return kind;
+    }
+
+    public String getCompensationType() {
+        return compensationType;
+    }
+
     public StepStatus getStatus() {
         return status;
     }
@@ -180,6 +244,10 @@ public class StepExecution {
 
     public Instant getNextAttemptAt() {
         return nextAttemptAt;
+    }
+
+    public Instant getLeaseExpiresAt() {
+        return leaseExpiresAt;
     }
 
     public Instant getCreatedAt() {

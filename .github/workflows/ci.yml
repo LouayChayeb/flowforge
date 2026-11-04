@@ -20,3 +20,41 @@ jobs:
       # Docker is available on GitHub-hosted runners, so Testcontainers tests run here.
       - name: Build and test
         run: ./mvnw -B verify
+
+  images:
+    # Images are only built once the tests have passed.
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [flowforge-orchestrator, flowforge-worker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.module }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: MODULE=${{ matrix.module }}
+          tags: ${{ matrix.module }}:${{ github.sha }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.module }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.module }}
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint and render the chart
+        run: |
+          helm lint deploy/helm/flowforge
+          helm template flowforge deploy/helm/flowforge > /dev/null
+          helm template flowforge deploy/helm/flowforge \
+            --set kafka.enabled=false --set kafka.externalBootstrap=kafka:9092 \
+            --set postgresql.enabled=false --set postgresql.external.url=jdbc:postgresql://db:5432/flowforge \
+            --set worker.autoscaling.enabled=true > /dev/null

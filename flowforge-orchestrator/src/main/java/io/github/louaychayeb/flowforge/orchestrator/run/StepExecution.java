@@ -21,7 +21,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -66,6 +68,14 @@ public class StepExecution {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
     private List<Integer> dependsOn = new ArrayList<>();
+
+    /** For a {@code WAIT} step: how long after its dependencies complete it fires. {@code null} otherwise. */
+    private Long waitMillis;
+
+    /** What the step produced for later steps; set when it completes. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb")
+    private Map<String, Object> output;
 
     @Enumerated(EnumType.STRING)
     private StepStatus status;
@@ -112,6 +122,7 @@ public class StepExecution {
                 definition.getStepType(), StepKind.FORWARD, definition.getMaxAttempts(), now);
         step.compensationType = definition.getCompensationType();
         step.dependsOn = new ArrayList<>(definition.getDependsOn());
+        step.waitMillis = definition.getWaitDuration() == null ? null : definition.getWaitDuration().toMillis();
         return step;
     }
 
@@ -126,14 +137,52 @@ public class StepExecution {
     }
 
     /**
-     * Marks a pending step as ready to be claimed now.
+     * Marks a pending step as ready to be claimed: now, or — for a {@code WAIT} step — once its wait is over. The due
+     * time is stored, so a timer survives any restart.
      */
     void makeEligible(Instant now) {
         if (status != StepStatus.PENDING) {
-            throw new IllegalStateTransitionException("Step %s cannot become eligible in status %s".formatted(id, status));
+            throw new IllegalStateTransitionException("Step %s cannot become eligible in status %s".formatted(id, status),
+                    Map.of("stepExecutionId", id, "stepStatus", status));
         }
+        nextAttemptAt = waitMillis == null ? now : now.plusMillis(waitMillis);
+        updatedAt = now;
+    }
+
+    /**
+     * Takes back the eligibility of a step that has not started yet — on cancellation, nothing new may start. A
+     * pending timer is cancelled the same way.
+     */
+    void withdraw(Instant now) {
+        if (status != StepStatus.PENDING || attemptCount != 0) {
+            throw new IllegalStateTransitionException("Step %s has already started and cannot be withdrawn".formatted(id),
+                    Map.of("stepExecutionId", id, "stepStatus", status));
+        }
+        nextAttemptAt = null;
+        updatedAt = now;
+    }
+
+    /**
+     * Operator override: gives a {@code FAILED} step another {@code extraAttempts} and schedules one now. The only
+     * way a step leaves a terminal state; its earlier attempts stay in the history unchanged.
+     */
+    void reopenByOperator(int extraAttempts, Instant now) {
+        if (status != StepStatus.FAILED) {
+            throw new IllegalStateTransitionException("Only a FAILED step can be retried, step %s is %s".formatted(id, status),
+                    Map.of("stepExecutionId", id, "stepStatus", status));
+        }
+        if (extraAttempts < 1) {
+            throw new IllegalArgumentException("extraAttempts must be at least 1");
+        }
+        status = StepStatus.RETRY_WAIT;
+        maxAttempts = attemptCount + extraAttempts;
         nextAttemptAt = now;
         updatedAt = now;
+    }
+
+    /** A built-in timer: the orchestrator completes it itself when it comes due, no worker involved. */
+    public boolean isTimer() {
+        return waitMillis != null;
     }
 
     /**
@@ -150,8 +199,14 @@ public class StepExecution {
     }
 
     public void complete(int attemptNumber, Instant now) {
+        complete(attemptNumber, Map.of(), now);
+    }
+
+    /** Completes the attempt and records what the step produced for the steps after it. */
+    public void complete(int attemptNumber, Map<String, Object> producedOutput, Instant now) {
         activeAttempt(attemptNumber).finish(AttemptStatus.SUCCEEDED, null, now);
         transitionTo(StepStatus.COMPLETED, now);
+        output = producedOutput == null || producedOutput.isEmpty() ? null : new LinkedHashMap<>(producedOutput);
         run.onStepCompleted(this, now);
     }
 
@@ -202,7 +257,8 @@ public class StepExecution {
 
     private void transitionTo(StepStatus target, Instant now) {
         if (!status.canTransitionTo(target)) {
-            throw new IllegalStateTransitionException("Step %s cannot move from %s to %s".formatted(id, status, target));
+            throw new IllegalStateTransitionException("Step %s cannot move from %s to %s".formatted(id, status, target),
+                    Map.of("stepExecutionId", id, "from", status, "to", target));
         }
         status = target;
         updatedAt = now;
@@ -266,6 +322,15 @@ public class StepExecution {
             return null;
         }
         return attempts.get(attempts.size() - 1).getFinishedAt();
+    }
+
+    /** What the step produced, or an empty map. */
+    public Map<String, Object> getOutput() {
+        return output == null ? Map.of() : Collections.unmodifiableMap(output);
+    }
+
+    public Long getWaitMillis() {
+        return waitMillis;
     }
 
     public StepStatus getStatus() {

@@ -1,6 +1,7 @@
 package io.github.louaychayeb.flowforge.orchestrator.api;
 
 import io.github.louaychayeb.flowforge.orchestrator.engine.RunTracing;
+import io.github.louaychayeb.flowforge.orchestrator.operator.OperatorAction;
 import io.github.louaychayeb.flowforge.orchestrator.run.AttemptStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.RunStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepAttempt;
@@ -9,6 +10,7 @@ import io.github.louaychayeb.flowforge.orchestrator.run.StepKind;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRun;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -41,11 +43,17 @@ public final class RunDtos {
             Instant createdAt,
             Instant updatedAt,
             Instant completedAt,
+            Instant cancelRequestedAt,
             String traceId,
-            List<StepExecutionResponse> steps
+            List<StepExecutionResponse> steps,
+            List<OperatorActionResponse> operatorActions
     ) {
 
         public static RunResponse from(WorkflowRun run) {
+            return from(run, List.of());
+        }
+
+        public static RunResponse from(WorkflowRun run, List<OperatorAction> actions) {
             return new RunResponse(
                     run.getId(),
                     run.getDefinition().getName(),
@@ -59,8 +67,10 @@ public final class RunDtos {
                     run.getCreatedAt(),
                     run.getUpdatedAt(),
                     run.getCompletedAt(),
+                    run.getCancelRequestedAt(),
                     RunTracing.traceId(run.getTraceParent()),
-                    run.getSteps().stream().map(StepExecutionResponse::from).toList());
+                    run.getSteps().stream().map(StepExecutionResponse::from).toList(),
+                    actions.stream().map(OperatorActionResponse::from).toList());
         }
     }
 
@@ -73,8 +83,10 @@ public final class RunDtos {
             int attemptCount,
             int maxAttempts,
             List<String> dependsOn,
+            Duration waitFor,
             Instant nextAttemptAt,
             Instant leaseExpiresAt,
+            Map<String, Object> output,
             List<AttemptResponse> attempts
     ) {
 
@@ -82,8 +94,18 @@ public final class RunDtos {
             return new StepExecutionResponse(step.getId(), step.getName(), step.getStepType(), step.getKind(),
                     step.getStatus(), step.getAttemptCount(), step.getMaxAttempts(),
                     step.getDependsOn().stream().map(p -> step.getRun().getSteps().get(p).getName()).toList(),
-                    step.getNextAttemptAt(),
-                    step.getLeaseExpiresAt(), step.getAttempts().stream().map(AttemptResponse::from).toList());
+                    step.getWaitMillis() == null ? null : Duration.ofMillis(step.getWaitMillis()),
+                    step.getNextAttemptAt(), step.getLeaseExpiresAt(), step.getOutput(),
+                    step.getAttempts().stream().map(AttemptResponse::from).toList());
+        }
+    }
+
+    public record OperatorActionResponse(OperatorAction.Type action, String actor, String reason,
+                                         RunStatus runStatusBefore, Instant performedAt) {
+
+        public static OperatorActionResponse from(OperatorAction action) {
+            return new OperatorActionResponse(action.getAction(), action.getActor(), action.getReason(),
+                    action.getRunStatus(), action.getPerformedAt());
         }
     }
 

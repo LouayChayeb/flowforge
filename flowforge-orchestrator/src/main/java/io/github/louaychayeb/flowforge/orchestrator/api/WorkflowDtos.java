@@ -11,6 +11,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -41,7 +42,9 @@ public final class WorkflowDtos {
             @Size(max = 100) @Pattern(regexp = STEP_TYPE_PATTERN, message = "must be UPPER_SNAKE_CASE")
             String compensateWith,
             // Names of earlier steps to wait for. Omitted: the previous step. Empty: start immediately.
-            List<@NotBlank String> dependsOn
+            List<@NotBlank String> dependsOn,
+            // For type WAIT only: an ISO-8601 duration such as "PT20S" or "P3D".
+            Duration waitFor
     ) {
     }
 
@@ -54,14 +57,19 @@ public final class WorkflowDtos {
     }
 
     public record StepResponse(String name, String type, int maxAttempts, String compensateWith,
-                               List<String> dependsOn) {
+                               List<String> dependsOn, Duration waitFor) {
 
         public static StepResponse from(StepDefinition step, List<StepDefinition> all) {
             return new StepResponse(step.getName(), step.getStepType(), step.getMaxAttempts(),
-                    step.getCompensationType(), step.getDependsOn().stream().map(p -> all.get(p).getName()).toList());
+                    step.getCompensationType(), step.getDependsOn().stream().map(p -> all.get(p).getName()).toList(),
+                    step.getWaitDuration());
         }
     }
 
     public record StartRunRequest(@NotNull Map<String, Object> input) {
+    }
+
+    /** Body of an operator action; the reason is kept in the run's audit log. */
+    public record OperatorActionRequest(@Size(max = 500) String reason) {
     }
 }

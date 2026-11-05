@@ -79,8 +79,8 @@ public class ConsistencyChecker {
                     """),
             new Invariant("ordered-in-time",
                     "Each step's first attempt started only after what it waits for finished: its dependencies' "
-                            + "successes for a forward step; every forward attempt and the previous compensation for "
-                            + "a compensation step",
+                            + "successes for a forward step (plus the wait, for a timer); every forward attempt and the "
+                            + "previous compensation for a compensation step",
                     """
                     SELECT s.id::text FROM step_execution s
                     JOIN step_attempt first_try ON first_try.step_execution_id = s.id AND first_try.attempt_number = 1
@@ -110,6 +110,18 @@ public class ConsistencyChecker {
                                      AND NOT EXISTS (SELECT 1 FROM step_attempt ok
                                                      WHERE ok.step_execution_id = prev.id AND ok.status = 'SUCCEEDED'
                                                        AND ok.finished_at <= first_try.started_at)))
+                    UNION ALL
+                    SELECT s.id::text FROM step_execution s
+                    JOIN step_attempt first_try ON first_try.step_execution_id = s.id AND first_try.attempt_number = 1
+                    JOIN workflow_run r ON r.id = s.workflow_run_id
+                    """ + SCOPE + """
+                      AND s.wait_millis IS NOT NULL
+                      AND first_try.started_at < s.wait_millis * INTERVAL '1 millisecond' + coalesce(
+                          (SELECT max(ok.finished_at) FROM jsonb_array_elements_text(s.depends_on) AS dep(pos)
+                           JOIN step_execution dep_step ON dep_step.workflow_run_id = s.workflow_run_id
+                                                       AND dep_step.position = dep.pos::int
+                           JOIN step_attempt ok ON ok.step_execution_id = dep_step.id AND ok.status = 'SUCCEEDED'),
+                          r.created_at)
                     """),
             new Invariant("completed-run-is-complete",
                     "A COMPLETED run has every step completed and nothing compensated",
@@ -142,24 +154,31 @@ public class ConsistencyChecker {
                                       WHERE c2.compensates_step_execution_id = f.id AND c2.id <> c.id))
                     """),
             new Invariant("compensated-run-is-compensated",
-                    "A COMPENSATED run has at least one compensation, and all of them completed",
+                    "A COMPENSATED run has at least one compensation and all of them completed; a CANCELLED run's "
+                            + "compensations, if it needed any, all completed",
                     """
                     SELECT r.id::text FROM workflow_run r
                     """ + SCOPE + """
-                      AND r.status = 'COMPENSATED'
-                      AND (NOT EXISTS (SELECT 1 FROM step_execution c
-                                       WHERE c.workflow_run_id = r.id AND c.kind = 'COMPENSATION')
-                           OR EXISTS (SELECT 1 FROM step_execution c
-                                      WHERE c.workflow_run_id = r.id AND c.kind = 'COMPENSATION'
-                                        AND c.status <> 'COMPLETED'))
+                      AND ((r.status = 'COMPENSATED'
+                            AND (NOT EXISTS (SELECT 1 FROM step_execution c
+                                             WHERE c.workflow_run_id = r.id AND c.kind = 'COMPENSATION')
+                                 OR EXISTS (SELECT 1 FROM step_execution c
+                                            WHERE c.workflow_run_id = r.id AND c.kind = 'COMPENSATION'
+                                              AND c.status <> 'COMPLETED')))
+                        OR (r.status = 'CANCELLED'
+                            AND EXISTS (SELECT 1 FROM step_execution c
+                                        WHERE c.workflow_run_id = r.id AND c.kind = 'COMPENSATION'
+                                          AND c.status <> 'COMPLETED')))
                     """),
             new Invariant("command-for-every-attempt",
-                    "Every attempt has its step command in the outbox (the claim and the command commit together)",
+                    "Every attempt of a worker step has its command in the outbox (the claim and the command commit "
+                            + "together); timers run in the orchestrator and send none",
                     """
                     SELECT a.id::text FROM step_attempt a
                     JOIN step_execution s ON s.id = a.step_execution_id
                     JOIN workflow_run r ON r.id = s.workflow_run_id
                     """ + SCOPE + """
+                      AND s.wait_millis IS NULL
                       AND NOT EXISTS (SELECT 1 FROM outbox_event o
                                       WHERE o.payload ->> 'stepExecutionId' = s.id::text
                                         AND (o.payload ->> 'attempt')::int = a.attempt_number)

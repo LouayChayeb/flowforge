@@ -1,11 +1,14 @@
 package io.github.louaychayeb.flowforge.orchestrator;
 
 import io.github.louaychayeb.flowforge.common.step.StepContext;
+import io.github.louaychayeb.flowforge.common.step.StepFailureException;
 import io.github.louaychayeb.flowforge.common.step.StepHandler;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
@@ -29,6 +32,15 @@ public final class TestStepHandlers {
     public static final String SOMETIMES = "TEST_SOMETIMES";
     /** Fails permanently if the run input has {@code "fail": true}, succeeds otherwise. */
     public static final String FAIL_IF_FLAGGED = "TEST_FAIL_IF_FLAGGED";
+    /** Succeeds with output {@code {"producedBy": <step name>, "attempt": n}}. */
+    public static final String PRODUCE = "TEST_PRODUCE";
+    /** Succeeds with output {@code {"echo": <producedBy of step "producer">}}; fails permanently if it is missing. */
+    public static final String CONSUME = "TEST_CONSUME";
+    /** A compensation that fails permanently until {@link #UNDO_ALLOWED} is set, for testing operator retries. */
+    public static final String UNDO_WHEN_ALLOWED = "TEST_UNDO_WHEN_ALLOWED";
+
+    /** Opens {@link #UNDO_WHEN_ALLOWED}. Tests that use it must reset it. */
+    public static final AtomicBoolean UNDO_ALLOWED = new AtomicBoolean();
 
     private TestStepHandlers() {
     }
@@ -48,6 +60,16 @@ public final class TestStepHandlers {
                 handler(FAIL_IF_FLAGGED, context -> Boolean.TRUE.equals(context.input().get("fail"))
                         ? StepHandlerResult.permanentFailure("flagged to fail")
                         : StepHandlerResult.succeeded()),
+                handler(PRODUCE, context -> StepHandlerResult.succeeded(
+                        Map.of("producedBy", context.stepName(), "attempt", context.attempt()))),
+                handler(CONSUME, context -> StepHandlerResult.succeeded(
+                        Map.of("echo", context.requireOutput("producer", "producedBy")))),
+                handler(UNDO_WHEN_ALLOWED, context -> {
+                    if (!UNDO_ALLOWED.get()) {
+                        throw new StepFailureException.Permanent("undo refused");
+                    }
+                    return StepHandlerResult.succeeded();
+                }),
                 handler(THROWS, context -> {
                     throw new IllegalStateException("boom");
                 }));

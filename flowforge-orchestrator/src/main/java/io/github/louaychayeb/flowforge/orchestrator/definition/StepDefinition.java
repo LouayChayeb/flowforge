@@ -11,6 +11,7 @@ import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -47,6 +48,9 @@ public class StepDefinition {
     @Column(columnDefinition = "jsonb")
     private List<Integer> dependsOn = new ArrayList<>();
 
+    /** For the built-in {@code WAIT} step type: how long to wait. {@code null} for every other step. */
+    private Long waitMillis;
+
     @Version
     private Long lockVersion;
 
@@ -54,7 +58,7 @@ public class StepDefinition {
     }
 
     StepDefinition(WorkflowDefinition workflowDefinition, int position, String name, String stepType, int maxAttempts,
-                   String compensationType, List<Integer> dependsOn) {
+                   String compensationType, List<Integer> dependsOn, Duration wait) {
         this.id = UUID.randomUUID();
         this.workflowDefinition = workflowDefinition;
         this.position = position;
@@ -63,6 +67,7 @@ public class StepDefinition {
         this.maxAttempts = maxAttempts;
         this.compensationType = compensationType;
         this.dependsOn = new ArrayList<>(dependsOn);
+        this.waitMillis = wait == null ? null : wait.toMillis();
     }
 
     public UUID getId() {
@@ -90,6 +95,11 @@ public class StepDefinition {
      */
     public String getCompensationType() {
         return compensationType;
+    }
+
+    /** For a {@code WAIT} step, how long it waits; otherwise {@code null}. */
+    public Duration getWaitDuration() {
+        return waitMillis == null ? null : Duration.ofMillis(waitMillis);
     }
 
     /** Positions of the steps this one waits for. */

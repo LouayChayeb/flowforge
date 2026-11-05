@@ -41,7 +41,7 @@ public class WorkflowController {
     public ResponseEntity<WorkflowResponse> register(@Valid @RequestBody CreateWorkflowRequest request) {
         WorkflowDefinition definition = definitionService.register(request.name(), request.steps().stream()
                 .map(step -> new NewStep(step.name(), step.type(), step.maxAttempts(), step.compensateWith(),
-                        step.dependsOn()))
+                        step.dependsOn(), step.waitFor()))
                 .toList());
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{name}").buildAndExpand(definition.getName()).toUri();

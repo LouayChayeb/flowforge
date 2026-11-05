@@ -1,5 +1,6 @@
 package io.github.louaychayeb.flowforge.orchestrator.engine;
 
+import io.github.louaychayeb.flowforge.common.messaging.StepOutcome;
 import io.github.louaychayeb.flowforge.common.messaging.StepResult;
 import io.github.louaychayeb.flowforge.common.messaging.Topics;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
@@ -8,6 +9,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+
+import java.util.Map;
 
 /**
  * Applies step results reported by workers.
@@ -37,7 +40,9 @@ public class StepResultListener {
     public void onResult(StepResult result) {
         try {
             stateService.recordOutcome(result.stepExecutionId(), result.attempt(),
-                    new StepHandlerResult(result.outcome(), result.errorMessage()));
+                    new StepHandlerResult(result.outcome(), result.errorMessage(),
+                            // Only a success carries output; ignore any on a failure rather than poison the listener.
+                            result.outcome() == StepOutcome.SUCCEEDED ? result.output() : Map.of()));
             metrics.resultApplied();
             log.info("Recorded {} for step {} attempt {} of run {}", result.outcome(), result.stepExecutionId(),
                     result.attempt(), result.runId());

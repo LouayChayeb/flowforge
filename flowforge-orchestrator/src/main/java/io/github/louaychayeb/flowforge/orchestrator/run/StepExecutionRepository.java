@@ -48,4 +48,13 @@ public interface StepExecutionRepository extends JpaRepository<StepExecution, UU
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from StepExecution s where s.id = :id")
     Optional<StepExecution> findByIdForUpdate(UUID id);
+
+    /**
+     * Locks every step of a run, in position order, for an operator action. Locking all of them (rather than the
+     * run alone) keeps the engine's lock order — steps, then run — so an operator action cannot deadlock with a
+     * result or a lease expiry for the same run.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from StepExecution s where s.run.id = :runId order by s.position")
+    List<StepExecution> lockAllOfRun(UUID runId);
 }

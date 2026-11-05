@@ -2,6 +2,7 @@ package io.github.louaychayeb.flowforge.orchestrator.run;
 
 import io.github.louaychayeb.flowforge.orchestrator.definition.StepDefinition;
 import io.github.louaychayeb.flowforge.orchestrator.definition.WorkflowDefinition;
+import io.github.louaychayeb.flowforge.orchestrator.error.OperationNotAllowedException;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -68,6 +69,9 @@ public class WorkflowRun {
 
     private Instant completedAt;
 
+    /** When an operator asked to cancel the run; from then on it winds down like a failed run. */
+    private Instant cancelRequestedAt;
+
     /** W3C traceparent of the trace this run belongs to; {@code null} when tracing is off. */
     private String traceParent;
 
@@ -121,7 +125,7 @@ public class WorkflowRun {
                 steps.get(next).makeEligible(now);
                 updatedAt = now;
             } else {
-                transitionTo(RunStatus.COMPENSATED, now);
+                transitionTo(isCancelling() ? RunStatus.CANCELLED : RunStatus.COMPENSATED, now);
             }
             return;
         }
@@ -172,7 +176,7 @@ public class WorkflowRun {
                         .thenComparing(StepExecution::getPosition).reversed())
                 .toList();
         if (toCompensate.isEmpty()) {
-            transitionTo(RunStatus.FAILED, now);
+            transitionTo(isCancelling() ? RunStatus.CANCELLED : RunStatus.FAILED, now);
             return;
         }
         transitionTo(RunStatus.COMPENSATING, now);
@@ -184,9 +188,61 @@ public class WorkflowRun {
         steps.get(firstCompensation).makeEligible(now);
     }
 
-    /** A forward step has failed for good: nothing new may start. */
+    /** A forward step has failed for good, or the run is being cancelled: nothing new may start. */
     private boolean isFailing() {
-        return forwardSteps().stream().anyMatch(s -> s.getStatus() == StepStatus.FAILED);
+        return isCancelling() || forwardSteps().stream().anyMatch(s -> s.getStatus() == StepStatus.FAILED);
+    }
+
+    public boolean isCancelling() {
+        return cancelRequestedAt != null;
+    }
+
+    /**
+     * Operator action: stop the run. Nothing new starts — steps that are eligible but have not started, timers
+     * included, are withdrawn — and steps already in flight are allowed to finish, because they may have side effects
+     * that need undoing. Then, exactly like after a failure, every completed step with a compensation is undone, most
+     * recently completed first, and the run ends {@code CANCELLED}.
+     *
+     * <p>Idempotent: cancelling a run that is already being cancelled does nothing.
+     *
+     * @throws OperationNotAllowedException if the run has finished or is already compensating a failure
+     */
+    public void cancel(Instant now) {
+        if (isCancelling() && !status.isTerminal()) {
+            return;
+        }
+        if (status != RunStatus.RUNNING) {
+            throw new OperationNotAllowedException("Run %s is %s and can no longer be cancelled".formatted(id, status),
+                    Map.of("runId", id, "runStatus", status));
+        }
+        cancelRequestedAt = now;
+        for (StepExecution step : forwardSteps()) {
+            if (step.getStatus() == StepStatus.PENDING && step.getNextAttemptAt() != null) {
+                step.withdraw(now);
+            }
+        }
+        finishFailureOnceDrained(now);
+    }
+
+    /**
+     * Operator action: retry the compensation that failed, with {@code extraAttempts} more attempts — for example
+     * after the payment provider that rejected a refund is back. The run returns to {@code COMPENSATING}; the failed
+     * attempts stay in the history.
+     *
+     * @throws OperationNotAllowedException unless the run is {@code COMPENSATION_FAILED}
+     */
+    public void retryCompensation(int extraAttempts, Instant now) {
+        if (!status.canBeReopenedByOperator()) {
+            throw new OperationNotAllowedException(
+                    "Only a COMPENSATION_FAILED run can be retried; run %s is %s".formatted(id, status),
+                    Map.of("runId", id, "runStatus", status));
+        }
+        StepExecution failed = steps.get(currentPosition);
+        failed.reopenByOperator(extraAttempts, now);
+        // The one transition out of a terminal state, made explicitly by an operator and recorded in the audit log.
+        status = RunStatus.COMPENSATING;
+        completedAt = null;
+        updatedAt = now;
     }
 
     private boolean dependenciesCompleted(StepExecution step) {
@@ -215,7 +271,8 @@ public class WorkflowRun {
 
     private void transitionTo(RunStatus target, Instant now) {
         if (!status.canTransitionTo(target)) {
-            throw new IllegalStateTransitionException("Run %s cannot move from %s to %s".formatted(id, status, target));
+            throw new IllegalStateTransitionException("Run %s cannot move from %s to %s".formatted(id, status, target),
+                    Map.of("runId", id, "from", status, "to", target));
         }
         status = target;
         updatedAt = now;
@@ -273,6 +330,10 @@ public class WorkflowRun {
 
     public Instant getCompletedAt() {
         return completedAt;
+    }
+
+    public Instant getCancelRequestedAt() {
+        return cancelRequestedAt;
     }
 
     public String getTraceParent() {

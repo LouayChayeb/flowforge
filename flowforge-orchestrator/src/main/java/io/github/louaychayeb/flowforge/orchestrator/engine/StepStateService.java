@@ -1,15 +1,18 @@
 package io.github.louaychayeb.flowforge.orchestrator.engine;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.louaychayeb.flowforge.common.messaging.StepCommand;
 import io.github.louaychayeb.flowforge.common.messaging.Topics;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
+import io.github.louaychayeb.flowforge.orchestrator.error.NotFoundException;
 import io.github.louaychayeb.flowforge.orchestrator.outbox.OutboxEvent;
 import io.github.louaychayeb.flowforge.orchestrator.outbox.OutboxEventRepository;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepAttempt;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepExecution;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepExecutionRepository;
+import io.github.louaychayeb.flowforge.orchestrator.run.StepKind;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRun;
 import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRunRepository;
@@ -24,6 +27,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -39,6 +43,9 @@ public class StepStateService {
 
     private static final TypeReference<Map<String, Object>> JSON_OBJECT = new TypeReference<>() {
     };
+
+    /** Largest step output accepted, serialised. Outputs are repeated in every later command of the run. */
+    static final int MAX_OUTPUT_BYTES = 64 * 1024;
 
     private final StepExecutionRepository steps;
     private final WorkflowRunRepository runs;
@@ -81,6 +88,10 @@ public class StepStateService {
         List<ClaimedStep> claimed = new ArrayList<>();
         for (StepExecution step : steps.lockClaimable(now, limit)) {
             StepAttempt attempt = step.start(now, properties.leaseDuration());
+            if (step.isTimer()) {
+                fireTimer(step, attempt, now);
+                continue;
+            }
             ClaimedStep claimedStep = new ClaimedStep(
                     step.getRun().getId(),
                     step.getId(),
@@ -89,7 +100,8 @@ public class StepStateService {
                     attempt.getAttemptNumber(),
                     step.getRun().getInput(),
                     step.getLeaseExpiresAt(),
-                    step.getCompensates() == null ? null : step.getCompensates().getId());
+                    step.getCompensates() == null ? null : step.getCompensates().getId(),
+                    outputsOf(step.getRun()));
             String traceParent = tracing.stepClaimed(step.getRun().getTraceParent(), claimedStep.runId().toString(),
                     step.getName(), step.getStepType(), attempt.getAttemptNumber());
             outbox.save(new OutboxEvent(Topics.STEP_COMMANDS, claimedStep.runId().toString(),
@@ -104,6 +116,30 @@ public class StepStateService {
     }
 
     /**
+     * A due timer fires inside the claim: the orchestrator completes it itself, no worker and no message involved.
+     * Completing it may make other steps ready — a run-level decision — so the run is locked first, after the step,
+     * in the same order as everywhere else.
+     */
+    private void fireTimer(StepExecution step, StepAttempt attempt, Instant now) {
+        lockRun(step);
+        step.complete(attempt.getAttemptNumber(), Map.of("firedAt", now.toString()), now);
+        log.info("Timer {} of run {} fired", step.getName(), step.getRun().getId());
+        recordTimings(step);
+        announceReadySteps(step.getRun(), now);
+    }
+
+    /** What every completed forward step of the run produced, by step name, for the next commands. */
+    private static Map<String, Map<String, Object>> outputsOf(WorkflowRun run) {
+        Map<String, Map<String, Object>> outputs = new LinkedHashMap<>();
+        for (StepExecution s : run.getSteps()) {
+            if (s.getKind() == StepKind.FORWARD && s.getStatus() == StepStatus.COMPLETED && !s.getOutput().isEmpty()) {
+                outputs.put(s.getName(), s.getOutput());
+            }
+        }
+        return outputs;
+    }
+
+    /**
      * Applies a worker's result to the step and its run: schedules a retry, advances to the next step,
      * starts compensation, or ends the run. The step row is locked first, so a result and a lease expiry
      * for the same attempt can never both be applied.
@@ -115,16 +151,38 @@ public class StepStateService {
     public void recordOutcome(UUID stepExecutionId, int attempt, StepHandlerResult result) {
         Instant now = clock.instant();
         StepExecution step = steps.findByIdForUpdate(stepExecutionId)
-                .orElseThrow(() -> new IllegalArgumentException("Unknown step execution " + stepExecutionId));
+                .orElseThrow(() -> new NotFoundException.StepNotFound(stepExecutionId));
         lockRun(step);
         switch (result.outcome()) {
-            case SUCCEEDED -> step.complete(attempt, now);
+            case SUCCEEDED -> {
+                String problem = outputProblem(result.output());
+                if (problem == null) {
+                    step.complete(attempt, result.output(), now);
+                } else {
+                    // Outputs travel in every later command; an oversized one would bloat them all.
+                    step.failPermanently(attempt, problem, now);
+                }
+            }
             case RETRYABLE_FAILURE ->
                     step.failRetryable(attempt, result.errorMessage(), retryPolicy.backoffAfter(attempt), now);
             case PERMANENT_FAILURE -> step.failPermanently(attempt, result.errorMessage(), now);
         }
         recordTimings(step);
-        announceReadySteps(step, now);
+        announceReadySteps(step.getRun(), now);
+    }
+
+    /** Why a step's output cannot be stored, or {@code null} if it can. */
+    private String outputProblem(Map<String, Object> output) {
+        if (output.isEmpty()) {
+            return null;
+        }
+        try {
+            int size = objectMapper.writeValueAsBytes(output).length;
+            return size <= MAX_OUTPUT_BYTES ? null
+                    : "Step output is %d bytes; the limit is %d".formatted(size, MAX_OUTPUT_BYTES);
+        } catch (JsonProcessingException e) {
+            return "Step output is not serialisable: " + e.getOriginalMessage();
+        }
     }
 
     /**
@@ -147,17 +205,19 @@ public class StepStateService {
     /** Step row first, then run row — the same order everywhere, so the two locks cannot deadlock. */
     private void lockRun(StepExecution step) {
         runs.findByIdForUpdate(step.getRun().getId())
-                .orElseThrow(() -> new IllegalStateException("Run of step " + step.getId() + " disappeared"));
+                .orElseThrow(() -> new NotFoundException.RunNotFound(step.getRun().getId()));
     }
 
     /**
-     * After a step changed, the next step (or this one, after its backoff) may be claimable: tell
-     * {@link EngineWakeup}, which acts once this transaction has committed.
+     * After the run changed, some of its steps may be claimable — now, after a retry backoff, or when a timer is due:
+     * tell {@link EngineWakeup} each time, which acts once this transaction has committed.
      */
-    private void announceReadySteps(StepExecution step, Instant now) {
-        Instant at = step.getStatus() == StepStatus.RETRY_WAIT && step.getNextAttemptAt() != null
-                ? step.getNextAttemptAt() : now;
-        events.publishEvent(new EngineEvents.StepsMayBeReady(at));
+    private void announceReadySteps(WorkflowRun run, Instant now) {
+        run.activeSteps().stream()
+                .filter(s -> s.getStatus() != StepStatus.RUNNING && s.getNextAttemptAt() != null)
+                .map(s -> s.getNextAttemptAt().isAfter(now) ? s.getNextAttemptAt() : now)
+                .distinct()
+                .forEach(at -> events.publishEvent(new EngineEvents.StepsMayBeReady(at)));
     }
 
     /**
@@ -195,7 +255,7 @@ public class StepStateService {
         Instant now = clock.instant();
         step.expireLease(retryPolicy.backoffAfter(step.getAttemptCount()), now);
         recordTimings(step);
-        announceReadySteps(step, now);
+        announceReadySteps(step.getRun(), now);
         return true;
     }
 }

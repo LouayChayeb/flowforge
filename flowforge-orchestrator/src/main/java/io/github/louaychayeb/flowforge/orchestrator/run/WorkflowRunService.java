@@ -1,6 +1,6 @@
 package io.github.louaychayeb.flowforge.orchestrator.run;
 
-import io.github.louaychayeb.flowforge.orchestrator.api.NotFoundException;
+import io.github.louaychayeb.flowforge.orchestrator.error.NotFoundException;
 import io.github.louaychayeb.flowforge.orchestrator.definition.WorkflowDefinition;
 import io.github.louaychayeb.flowforge.orchestrator.definition.WorkflowDefinitionRepository;
 import io.github.louaychayeb.flowforge.orchestrator.engine.EngineEvents;
@@ -41,12 +41,14 @@ public class WorkflowRunService {
     @Transactional
     public WorkflowRun start(String workflowName, Map<String, Object> input) {
         WorkflowDefinition definition = definitions.findFirstByNameOrderByVersionDesc(workflowName)
-                .orElseThrow(() -> new NotFoundException("Workflow " + workflowName + " not found"));
+                .orElseThrow(() -> new NotFoundException.WorkflowNotFound(workflowName));
         Instant now = clock.instant();
         WorkflowRun run = WorkflowRun.start(definition, input, now);
         run.attachTrace(tracing.runStarted(workflowName, run.getId().toString()));
         runs.save(run);
-        events.publishEvent(new EngineEvents.StepsMayBeReady(now));
+        // Steps without dependencies are claimable now; a timer among them, when it is due.
+        run.activeSteps().stream().map(StepExecution::getNextAttemptAt).distinct()
+                .forEach(at -> events.publishEvent(new EngineEvents.StepsMayBeReady(at)));
         return run;
     }
 
@@ -56,7 +58,7 @@ public class WorkflowRunService {
     @Transactional(readOnly = true)
     public <T> T find(UUID runId, Function<WorkflowRun, T> mapper) {
         WorkflowRun run = runs.findById(runId)
-                .orElseThrow(() -> new NotFoundException("Run " + runId + " not found"));
+                .orElseThrow(() -> new NotFoundException.RunNotFound(runId));
         return mapper.apply(run);
     }
 }

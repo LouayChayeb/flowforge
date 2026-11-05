@@ -8,6 +8,7 @@ import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -73,7 +74,29 @@ public class WorkflowDefinition {
             }
         }
         steps.add(new StepDefinition(this, position, stepName, stepType, maxAttempts, compensationType,
-                dependsOn.stream().distinct().sorted().toList()));
+                dependsOn.stream().distinct().sorted().toList(), null));
+    }
+
+    /** The built-in step type for timers: completed by the orchestrator itself once its wait is over. */
+    public static final String WAIT = "WAIT";
+
+    /**
+     * Adds a durable timer: a step that completes {@code wait} after its dependencies did. No worker runs it, and it
+     * has nothing to undo.
+     */
+    public void addTimer(String stepName, Duration wait, List<Integer> dependsOn) {
+        int position = steps.size();
+        for (int dependency : dependsOn) {
+            if (dependency < 0 || dependency >= position) {
+                throw new IllegalArgumentException("Step " + stepName + " can only depend on earlier steps, not position "
+                        + dependency);
+            }
+        }
+        if (wait == null || wait.isZero() || wait.isNegative()) {
+            throw new IllegalArgumentException("Timer " + stepName + " needs a positive wait");
+        }
+        steps.add(new StepDefinition(this, position, stepName, WAIT, 1, null,
+                dependsOn.stream().distinct().sorted().toList(), wait));
     }
 
     public UUID getId() {

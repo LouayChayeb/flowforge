@@ -55,6 +55,18 @@ flowchart LR
 
 More detail, including how each failure mode is handled, is in [docs/architecture.md](docs/architecture.md).
 
+## Dashboard
+
+The orchestrator serves a live dashboard at its root, **http://localhost:8080/** (no separate frontend, no build step). It is meant for demos and for learning how the engine works:
+
+- **Live** — one-click orders for every outcome (normal, flaky carrier, carrier down, declined payment, undeliverable address, invalid order, failed refund, slow shipment), and a diagram of how a step travels with live rates per edge. Clicking a component explains what it does and which classes and methods do it.
+- **Run detail** — the run's state machine and the path it took, its steps and undo steps with attempts and lease countdowns, and a timeline rebuilt from the stored attempts and outbox rows, each event explaining the code behind it.
+- **Engine** — counters, leases and retry backoffs in progress, database totals, the ten invariants checked every 5 s, and the configuration the instance runs with.
+- **Kafka** — which consumer owns which partition, committed offsets and lag, and a guide to killing a worker and watching its partitions move.
+- **Learn** — the life of an order, failure modes and what handles them, the guarantees, a searchable map of every class, and a glossary.
+
+"Take the tour" walks through it; "Guide mode" shows the explanations everywhere.
+
 ## API
 
 | Method | Path | Purpose |
@@ -64,6 +76,18 @@ More detail, including how each failure mode is handled, is in [docs/architectur
 | `POST` | `/api/workflows/{name}/runs` | Start a run; returns `202 Accepted` immediately with a `Location` to poll |
 | `GET` | `/api/runs/{runId}` | Run status, every step's state and the full attempt history |
 | `GET` | `/api/admin/consistency` | Check the stored history against FlowForge's [invariants](docs/correctness.md); `?workflow=` to narrow it |
+
+Read-only endpoints behind the dashboard:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/workflows` | Latest version of every workflow |
+| `GET` | `/api/runs?limit=&status=` | Most recent runs with progress summaries |
+| `GET` | `/api/runs/{runId}/commands` | The run's step commands: when each was written to the outbox and sent to Kafka |
+| `GET` | `/api/admin/stats` | This instance's counters, database-wide counts, leased and waiting steps |
+| `GET` | `/api/admin/config` | The engine configuration this instance runs with |
+| `GET` | `/api/admin/kafka` | Topics, consumer groups, partition ownership and lag |
+| `GET` | `/api/admin/consistency/invariants` | Names and meaning of the ten invariants |
 
 Errors are returned as RFC 9457 problem details (`application/problem+json`).
 
@@ -114,6 +138,10 @@ The sample handlers are simulated. Three inputs show the failure paths:
 | `"amount": 0` | `validate-order` fails permanently; nothing to undo | `FAILED` |
 | `"amount": 50000` | `charge-payment` is declined after inventory was reserved → `RELEASE_INVENTORY` runs | `COMPENSATED` |
 | `"country": "XX"` | `create-shipment` fails after reserve and charge → `REFUND_PAYMENT`, then `RELEASE_INVENTORY` | `COMPENSATED` |
+| `"shipmentFailures": 2` | `create-shipment` fails retryably twice, backs off 1 s then 2 s, succeeds on attempt 3 | `COMPLETED` |
+| `"shipmentFailures": 3` or more | `create-shipment` runs out of attempts → refund, then release | `COMPENSATED` |
+| `"country": "XX", "refundFails": true` | Shipment refused, then the refund is rejected too | `COMPENSATION_FAILED` |
+| `"shipmentDelayMs": 8000` | `create-shipment` takes 8 s — time to watch its lease or kill its worker | `COMPLETED` |
 
 Steps opt into compensation with `"compensateWith": "<STEP_TYPE>"` in the definition. Compensations appear in the run's `steps` with `"kind": "COMPENSATION"`, and go through the same retries and leases as forward steps. If a compensation itself fails, the run ends `COMPENSATION_FAILED` for manual attention.
 
@@ -233,7 +261,9 @@ flowforge/
 │       ├── run/               # Runs, step executions, attempts, state machine
 │       ├── engine/            # Claiming, result listener, lease recovery, retry policy, scheduler, metrics
 │       ├── outbox/            # Transactional outbox and its publisher
-│       └── consistency/       # Invariant checker behind /api/admin/consistency
+│       ├── consistency/       # Invariant checker behind /api/admin/consistency
+│       └── insight/           # Read-only queries and Kafka inspection for the dashboard
+│   └── src/main/resources/static/   # The dashboard (plain HTML, CSS and JavaScript)
 ├── flowforge-worker/          # Kafka command listener
 │   └── src/main/java/…/worker/handlers/   # Sample order-processing step handlers
 ├── deploy/helm/flowforge/     # Helm chart: orchestrator, workers, PostgreSQL, Kafka

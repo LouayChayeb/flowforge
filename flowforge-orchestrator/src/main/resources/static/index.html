@@ -27,6 +27,7 @@
   <div class="topbar-right">
     <label class="switch" title="Show the explanation boxes everywhere"><input type="checkbox" id="guide-toggle" checked> Guide mode</label>
     <button class="btn" id="tour-btn">Take the tour</button>
+    <button class="btn ghost" id="keys-btn" title="Keyboard shortcuts (?)">⌨</button>
     <button class="btn ghost" id="theme-btn" title="Toggle light / dark">◐</button>
     <span class="conn"><span class="dot" id="conn-dot"></span><span id="conn-text">connecting…</span></span>
   </div>
@@ -85,9 +86,10 @@
             <select id="run-filter">
               <option value="">All statuses</option>
               <option>RUNNING</option><option>COMPENSATING</option><option>COMPLETED</option>
-              <option>COMPENSATED</option><option>FAILED</option><option>COMPENSATION_FAILED</option>
+              <option>COMPENSATED</option><option>FAILED</option><option>COMPENSATION_FAILED</option><option>CANCELLED</option>
             </select>
           </div>
+          <div class="chips" id="run-chips"></div>
           <div class="panel-body flush table-wrap">
             <table>
               <thead><tr><th>Order</th><th>Status</th><th>Now at</th><th>Attempts</th><th>Duration</th><th>Started</th></tr></thead>
@@ -108,6 +110,8 @@
           <h2 id="run-title">Run</h2>
           <span id="run-status"></span>
           <span class="spacer"></span>
+          <button class="btn" id="run-cancel" hidden title="Stop the run: nothing new starts, completed steps are undone">Cancel run</button>
+          <button class="btn primary" id="run-retry" hidden title="Retry the compensation that failed">Retry compensation</button>
           <a class="small" id="run-trace" target="_blank" hidden title="The run as one distributed trace: every claim, Kafka hop, worker and payment call">open trace ↗</a>
           <a class="small" id="run-json" target="_blank">raw JSON</a>
         </div>
@@ -124,12 +128,26 @@
       <div class="panel" id="tour-pipeline">
         <div class="panel-head"><h2>Steps</h2><span class="hint">Click a step for its attempts and state machine. Dots are attempts.</span></div>
         <div class="panel-body">
-          <p class="explain">Steps run <b>one at a time, in order</b>: only the run's current step is ever eligible.
-            When a step fails for good, FlowForge walks back over the steps that already succeeded and appends a
-            <b>compensation</b> (undo) step for each one that declared it, most recent first — that is the lower lane.</p>
+          <p class="explain">Each column runs once every step it <b>depends on</b> has completed, so the steps stacked in one
+            column run <b>in parallel</b>. A dashed card is a <b>durable timer</b>; "→ key=value" is the output a step
+            hands to later steps. When a step fails for good (or the run is cancelled), FlowForge appends a
+            <b>compensation</b> (undo) step for each completed step that declared one, most recent first — the lower lane.</p>
           <div class="lanes" id="lanes"></div>
         </div>
         <div class="drawer" id="step-drawer" hidden></div>
+      </div>
+
+      <div class="panel" id="tour-waterfall">
+        <div class="panel-head">
+          <h2>Waterfall</h2>
+          <span class="hint">Every attempt on one time axis. Solid = executing, hatched = waiting on purpose (backoff, timer). Click a row.</span>
+        </div>
+        <div class="panel-body">
+          <p class="explain">This is where parallelism and waiting become visible: two bars side by side are two workers
+            on the same order at the same time; a hatched stretch is time the run spent waiting on purpose — a
+            retry backoff or a durable timer — while holding no worker and no thread.</p>
+          <div class="waterfall" id="waterfall"></div>
+        </div>
       </div>
 
       <div class="panel" id="tour-timeline">
@@ -258,6 +276,33 @@
 </main>
 
 <div class="toast" id="toast"></div>
+
+<dialog class="modal" id="keys-dialog">
+  <h3>Keyboard shortcuts</h3>
+  <dl class="kv">
+    <dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>Live · Run detail · Engine · Kafka · Learn</dd>
+    <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous run in the list</dd>
+    <dt><kbd>/</kbd></dt><dd>Search the code map</dd>
+    <dt><kbd>g</kbd></dt><dd>Toggle guide mode</dd>
+    <dt><kbd>t</kbd></dt><dd>Toggle light / dark</dd>
+    <dt><kbd>?</kbd></dt><dd>This list</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Close dialogs and the tour</dd>
+  </dl>
+  <div class="row" style="justify-content:flex-end"><button class="btn" data-close-dialog>Close</button></div>
+</dialog>
+
+<dialog class="modal" id="op-dialog">
+  <form method="dialog">
+    <h3 id="op-title">Cancel run</h3>
+    <p class="small muted" id="op-text"></p>
+    <label class="small">Your name<input id="op-actor" maxlength="100" placeholder="anonymous"></label>
+    <label class="small">Reason (kept in the audit trail)<textarea id="op-reason" maxlength="500" rows="3"></textarea></label>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn ghost" value="close">Never mind</button>
+      <button class="btn primary" value="confirm">Confirm</button>
+    </div>
+  </form>
+</dialog>
 
 <script type="module" src="assets/dashboard.js"></script>
 </body>

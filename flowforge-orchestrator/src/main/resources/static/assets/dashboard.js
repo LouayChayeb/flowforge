@@ -17,6 +17,17 @@ const ORDER_PROCESSING = {
   ],
 };
 
+// The same order with a 20 s cooling-off period after the charge: a durable WAIT step, during which it can be cancelled.
+const COOLING_OFF = {
+  name: 'order-with-cooling-off',
+  steps: [
+    ...ORDER_PROCESSING.steps.slice(0, 4),
+    { name: 'cooling-off', type: 'WAIT', waitFor: 'PT20S', dependsOn: ['charge-payment'] },
+    { name: 'create-shipment', type: 'CREATE_SHIPMENT', dependsOn: ['cooling-off'] },
+    { name: 'send-confirmation', type: 'SEND_CONFIRMATION' },
+  ],
+};
+
 const SCENARIOS = [
   { id: 'normal', title: 'Normal order', expect: 'COMPLETED',
     text: 'All six steps succeed, one attempt each; reserve-inventory and check-fraud run at the same time. The baseline.',
@@ -42,6 +53,9 @@ const SCENARIOS = [
   { id: 'refund', title: 'Refund fails too', expect: 'COMPENSATION_FAILED',
     text: 'Shipping is refused and then the refund is rejected: the one case the engine cannot fix alone.',
     input: { country: 'XX', refundFails: true } },
+  { id: 'cooling', title: 'Cooling-off order (cancel it!)', expect: 'CANCELLED', workflow: COOLING_OFF.name,
+    text: 'After the charge, a durable 20 s timer runs before shipping. Open the run and press Cancel run during the wait: the charge is refunded and the stock released.',
+    input: {} },
   { id: 'slow', title: 'Slow shipment (kill a worker now)', expect: 'COMPLETED',
     text: 'Shipping takes 8 s. Watch the lease count down on the Engine tab — or kill the worker running it (see Kafka tab).',
     input: { shipmentDelayMs: 8000 } },
@@ -49,7 +63,7 @@ const SCENARIOS = [
 
 const RUN_STATUS_COLOR = {
   RUNNING: 'var(--s-running)', COMPLETED: 'var(--s-completed)', FAILED: 'var(--s-failed)',
-  COMPENSATING: 'var(--s-compensating)', COMPENSATED: 'var(--s-compensated)', COMPENSATION_FAILED: 'var(--s-compfailed)',
+  COMPENSATING: 'var(--s-compensating)', COMPENSATED: 'var(--s-compensated)', COMPENSATION_FAILED: 'var(--s-compfailed)', CANCELLED: 'var(--s-pending)',
   PENDING: 'var(--s-pending)', RETRY_WAIT: 'var(--s-retry)', SUCCEEDED: 'var(--s-completed)',
   RETRYABLE_FAILURE: 'var(--s-retry)', PERMANENT_FAILURE: 'var(--s-failed)', TIMED_OUT: 'var(--s-timedout)',
 };
@@ -127,7 +141,7 @@ function fillConfig(root = document) {
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, ...options,
+    ...options, headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...options.headers },
   });
   if (!response.ok) {
     let detail = `${response.status}`;
@@ -147,7 +161,8 @@ function orderInput(extra) {
   return input;
 }
 
-function scenarioOf(input = {}) {
+function scenarioOf(input = {}, workflow) {
+  if (workflow === 'order-with-cooling-off') return 'Cooling-off order';
   if (input.refundFails === true || input.refundFails === 'true') return 'Refund fails too';
   if (input.fraud === true || input.fraud === 'true') return 'Fraud detected';
   if (+input.shipmentFailures >= 3) return 'Carrier down';
@@ -159,24 +174,24 @@ function scenarioOf(input = {}) {
   return 'Normal order';
 }
 
-async function ensureWorkflow() {
+/** Registers (a new version of) a workflow if it is missing or older than this page's definition. */
+async function ensureWorkflow(definition = ORDER_PROCESSING) {
   let latest = null;
   try {
-    latest = await api(`/api/workflows/${WORKFLOW}`);
+    latest = await api(`/api/workflows/${definition.name}`);
   } catch (e) {
     if (e.status !== 404) throw e;
   }
-  // Register (a new version of) the workflow if it is missing or older than the parallel one.
-  if (!latest || !latest.steps.some((s) => s.name === 'check-fraud')) {
-    const created = await api('/api/workflows', { method: 'POST', body: JSON.stringify(ORDER_PROCESSING) });
-    toast(`Registered <b>order-processing</b> version ${created.version}, with reserve-inventory and check-fraud in parallel.
-      Runs already started keep the version they began with.`, 7000);
+  const upToDate = latest && definition.steps.every((d) => latest.steps.some((s) => s.name === d.name && s.type === d.type));
+  if (!upToDate) {
+    const created = await api('/api/workflows', { method: 'POST', body: JSON.stringify(definition) });
+    toast(`Registered <b>${esc(definition.name)}</b> version ${created.version}. Runs already started keep the version they began with.`, 6000);
   }
 }
 
-async function startOrder(input, { quiet = false } = {}) {
-  await ensureWorkflow();
-  const created = await api(`/api/workflows/${WORKFLOW}/runs`, { method: 'POST', body: JSON.stringify({ input }) });
+async function startOrder(input, { quiet = false, workflow = WORKFLOW } = {}) {
+  await ensureWorkflow(workflow === COOLING_OFF.name ? COOLING_OFF : ORDER_PROCESSING);
+  const created = await api(`/api/workflows/${workflow}/runs`, { method: 'POST', body: JSON.stringify({ input }) });
   if (!quiet) {
     toast(`202 Accepted — run <b>${esc(input.orderId ?? created.runId.slice(0, 8))}</b> stored as RUNNING.
       <a href="#" data-open-run="${created.runId}" style="color:inherit;text-decoration:underline">Open it</a>`, 6000);
@@ -286,7 +301,22 @@ function renderComponent(id) {
 }
 
 // ---------------------------------------------------------------- runs list
+/** Status chips over the run list: counts, success rate, and a one-click filter. */
+function renderRunChips() {
+  const counts = {};
+  state.runs.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  const finished = state.runs.filter((r) => r.completedAt);
+  const ok = finished.filter((r) => r.status === 'COMPLETED').length;
+  const active = $('#run-filter').value;
+  const order = ['RUNNING', 'COMPENSATING', 'COMPLETED', 'COMPENSATED', 'FAILED', 'COMPENSATION_FAILED', 'CANCELLED'];
+  $('#run-chips').innerHTML = (active ? '<button class="chip on" data-chip="">show all ✕</button>' : '')
+    + order.filter((s) => counts[s] || s === active).map((s) => `<button class="chip ${s === active ? 'on' : ''}" data-chip="${s}" style="--c:${RUN_STATUS_COLOR[s]}">
+      <span class="wf-dot"></span>${s.toLowerCase().replaceAll('_', ' ')} <b>${counts[s] || 0}</b></button>`).join('')
+    + (finished.length && !active ? `<span class="spacer"></span><span class="small muted" title="of the finished runs in this list">${Math.round((ok / finished.length) * 100)}% completed</span>` : '');
+}
+
 function renderRuns() {
+  renderRunChips();
   const body = $('#runs-body');
   if (!state.runs.length) {
     body.innerHTML = '<tr><td colspan="6" class="empty">No runs yet. Start an order on the left.</td></tr>';
@@ -299,7 +329,7 @@ function renderRuns() {
         ? ` <span class="small muted" title="steps running in parallel">+${r.activeSteps - 1}</span>` : ''}`
       : '<span class="faint">—</span>';
     return `<tr class="clickable ${r.runId === state.runId ? 'selected' : ''}" data-run="${r.runId}">
-      <td><b>${esc(r.input?.orderId ?? r.runId.slice(0, 8))}</b><div class="small muted">${esc(scenarioOf(r.input))}</div></td>
+      <td><b>${esc(r.input?.orderId ?? r.runId.slice(0, 8))}</b><div class="small muted">${esc(scenarioOf(r.input, r.workflow))}</div></td>
       <td>${livePill(r.status)}</td>
       <td>${at}</td>
       <td class="nowrap">${r.attempts}${r.failedAttempts ? ` <span class="small" style="color:var(--s-failed)">(${r.failedAttempts} failed)</span>` : ''}</td>
@@ -335,9 +365,11 @@ function renderRun() {
   $('#run-detail').hidden = !run;
   if (!run) return;
   const input = run.input || {};
-  $('#run-title').textContent = `${input.orderId ?? 'Run'} · ${scenarioOf(input)}`;
+  $('#run-title').textContent = `${input.orderId ?? 'Run'} · ${scenarioOf(input, run.workflow)}`;
   $('#run-status').innerHTML = pill(run.status, `big ${['RUNNING', 'COMPENSATING'].includes(run.status) ? 'pulse' : ''}`);
   $('#run-json').href = `/api/runs/${run.runId}`;
+  $('#run-cancel').hidden = !(run.status === 'RUNNING' && !run.cancelRequestedAt);
+  $('#run-retry').hidden = run.status !== 'COMPENSATION_FAILED';
   const traceLink = $('#run-trace');
   if (run.traceId && state.config?.traceUrl) {
     traceLink.hidden = false;
@@ -354,22 +386,78 @@ function renderRun() {
     <dt>Duration</dt><dd>${fmtDur(end - ms(run.createdAt))}</dd>
     <dt>Current step</dt><dd>${run.currentStep ? esc(run.currentStep) : '<span class="muted">none — the run is finished</span>'}</dd>
     <dt>Payment provider</dt><dd>${runPaymentsText()}</dd>
+    ${run.cancelRequestedAt ? `<dt>Cancel requested</dt><dd>${fmtClock(run.cancelRequestedAt)}</dd>` : ''}
+    ${(run.operatorActions ?? []).length ? `<dt>Operator actions</dt><dd>${run.operatorActions.map((a) =>
+      `<div><b>${esc(a.action)}</b> by ${esc(a.actor)} at ${fmtClock(a.performedAt)} <span class="muted">(was ${esc(a.runStatusBefore)})</span>${a.reason ? `<div class="small muted">"${esc(a.reason)}"</div>` : ''}</div>`).join('')}</dd>` : ''}
     <dt>Input</dt><dd><pre>${esc(JSON.stringify(input, null, 2))}</pre></dd>`;
   $('#run-state-text').innerHTML = `<b>${esc(run.status)}</b>: ${esc(RUN_STATES[run.status] || '')}`;
   renderRunStateMachine(run);
   renderLanes(run);
   renderStepDrawer();
+  renderWaterfall(run);
   renderTimeline(run);
+}
+
+/** Every attempt of every step on one time axis: where the run spent its time, and what ran in parallel. */
+function renderWaterfall(run) {
+  const start = ms(run.createdAt);
+  const end = Math.max(run.completedAt ? ms(run.completedAt) : now(),
+    ...run.steps.map((s) => (s.status === 'PENDING' || s.status === 'RETRY_WAIT') && s.nextAttemptAt ? ms(s.nextAttemptAt) : 0));
+  const span = Math.max(end - start, 1);
+  const x = (t) => `${Math.min(100, Math.max(0, ((t - start) / span) * 100)).toFixed(3)}%`;
+  const w = (a, b) => `${Math.max(0.4, ((Math.min(b, end) - Math.max(a, start)) / span) * 100).toFixed(3)}%`;
+  const done = (s) => ms(s?.attempts.find((a) => a.status === 'SUCCEEDED')?.finishedAt);
+  const forward = new Map(run.steps.filter((s) => s.kind !== 'COMPENSATION').map((s) => [s.name, s]));
+  const rows = run.steps.map((step) => {
+    const segs = [];
+    const label = step.kind === 'COMPENSATION' ? `undo ${step.name}` : step.name;
+    if (step.waitFor) {
+      // a timer: hatched from the moment it was armed until it fired (or until now)
+      const wait = parseIsoDuration(step.waitFor);
+      const deps = (step.dependsOn ?? []).map((n) => forward.get(n));
+      const armed = step.nextAttemptAt ? ms(step.nextAttemptAt) - wait : deps.length ? Math.max(...deps.map(done)) : start;
+      const fired = ms(step.attempts[0]?.startedAt);
+      const stop = fired || (step.nextAttemptAt ? Math.min(ms(step.nextAttemptAt), now()) : null);
+      if (armed && stop) segs.push(`<div class="wf-seg wait" style="left:${x(armed)};width:${w(armed, stop)}" title="durable timer, ${fmtDur(wait)}"></div>`);
+      if (step.nextAttemptAt && !fired) segs.push(`<div class="wf-seg mark" style="left:${x(ms(step.nextAttemptAt))}" title="due ${fmtClock(step.nextAttemptAt)}">⏱</div>`);
+      if (fired) segs.push(`<div class="wf-seg mark" style="left:${x(fired)}" title="fired ${fmtClock(step.attempts[0].startedAt)}">⏱</div>`);
+    }
+    step.attempts.forEach((a, i) => {
+      if (step.waitFor) return;
+      const s0 = ms(a.startedAt); const s1 = ms(a.finishedAt) || now();
+      const prev = step.attempts[i - 1];
+      if (prev?.finishedAt) segs.push(`<div class="wf-seg wait" style="left:${x(ms(prev.finishedAt))};width:${w(ms(prev.finishedAt), s0)}" title="backoff ${fmtDur(s0 - ms(prev.finishedAt))}"></div>`);
+      segs.push(`<div class="wf-seg ${a.finishedAt ? '' : 'live'}" style="left:${x(s0)};width:${w(s0, s1)};--c:${RUN_STATUS_COLOR[a.status]}"
+        title="attempt ${a.attempt}: ${a.status} · ${fmtDur(s1 - s0)}${a.errorMessage ? ' · ' + esc(a.errorMessage) : ''}"></div>`);
+    });
+    if (step.status === 'RETRY_WAIT' && step.nextAttemptAt) {
+      const last = ms(step.attempts.at(-1)?.finishedAt);
+      if (last) segs.push(`<div class="wf-seg wait" style="left:${x(last)};width:${w(last, Math.min(now(), ms(step.nextAttemptAt)))}" title="backoff until ${fmtClock(step.nextAttemptAt)}"></div>`);
+    }
+    const busy = step.attempts.reduce((t, a) => t + ((ms(a.finishedAt) || now()) - ms(a.startedAt)), 0);
+    const dur = step.waitFor ? fmtDur(parseIsoDuration(step.waitFor)) : step.attempts.length ? fmtDur(busy) : '—';
+    return `<div class="wf-row ${state.stepId === step.stepExecutionId ? 'selected' : ''} ${step.kind === 'COMPENSATION' ? 'undo' : ''}" data-wf-step="${step.stepExecutionId}">
+      <div class="wf-label" title="${esc(step.type)}"><span class="wf-dot" style="--c:${RUN_STATUS_COLOR[step.status]}"></span>${esc(label)}</div>
+      <div class="wf-track">${segs.join('')}</div>
+      <div class="wf-dur small muted">${dur}</div>
+    </div>`;
+  });
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span style="left:${f * 100}%">+${fmtDur(span * f)}</span>`).join('');
+  const nowAt = Math.min(1, (now() - start) / span);
+  const nowLine = run.completedAt ? '' : `<div class="wf-track wf-now-track"><div class="wf-now" style="left:${(nowAt * 100).toFixed(3)}%" title="now"></div></div>`;
+  $('#waterfall').innerHTML = `${rows.join('')}<div class="wf-row wf-axis"><div></div><div class="wf-track ticks">${ticks}</div><div></div></div>
+    <div class="wf-overlay"><div></div>${nowLine}<div></div></div>`;
 }
 
 function renderRunStateMachine(run) {
   const S = {
-    RUNNING: [20, 65], COMPLETED: [200, 10], FAILED: [200, 120], COMPENSATING: [200, 65],
+    RUNNING: [20, 65], COMPLETED: [200, 10], FAILED: [200, 120], COMPENSATING: [200, 65], CANCELLED: [380, 150],
     COMPENSATED: [380, 30], COMPENSATION_FAILED: [380, 100],
   };
   const T = [
     ['RUNNING', 'COMPLETED', 'last step done'], ['RUNNING', 'COMPENSATING', 'step failed'], ['RUNNING', 'FAILED', 'failed, nothing to undo'],
     ['COMPENSATING', 'COMPENSATED', 'all undone'], ['COMPENSATING', 'COMPENSATION_FAILED', 'undo failed'],
+    ['RUNNING', 'CANCELLED', 'cancelled, nothing to undo'], ['COMPENSATING', 'CANCELLED', 'cancelled, all undone'],
   ];
   const compensated = run.steps.some((s) => s.kind === 'COMPENSATION');
   const visited = new Set(['RUNNING', run.status]);
@@ -380,6 +468,7 @@ function renderRunStateMachine(run) {
   if (compensated) taken.add('RUNNING>COMPENSATING');
   if (run.status === 'COMPENSATED') taken.add('COMPENSATING>COMPENSATED');
   if (run.status === 'COMPENSATION_FAILED') taken.add('COMPENSATING>COMPENSATION_FAILED');
+  if (run.status === 'CANCELLED') taken.add(compensated ? 'COMPENSATING>CANCELLED' : 'RUNNING>CANCELLED');
   const W = 130; const H = 30;
   const edge = ([a, b, label]) => {
     const [x1, y1] = S[a]; const [x2, y2] = S[b];
@@ -409,15 +498,22 @@ function stepCard(step, run) {
   } else if (step.status === 'RETRY_WAIT' && step.nextAttemptAt) {
     const left = Math.max(0, ms(step.nextAttemptAt) - now());
     bar = `<div class="small" style="color:var(--s-retry)">retry in ${fmtDur(left)}</div>`;
+  } else if (step.waitFor && step.status === 'PENDING' && step.nextAttemptAt) {
+    const left = Math.max(0, ms(step.nextAttemptAt) - now());
+    bar = `<div class="small" style="color:var(--s-retry)">⏱ fires in ${fmtDur(left)}</div>`;
+  } else if (step.waitFor && step.attemptCount === 0) {
+    bar = `<div class="small muted">⏱ waits ${esc(step.waitFor)}</div>`;
   }
+  const out = Object.keys(step.output ?? {}).length
+    ? `<div class="output" title="output passed to later steps">→ ${esc(Object.entries(step.output).map(([k, v]) => `${k}=${v}`).join(', '))}</div>` : '';
   const label = step.kind === 'COMPENSATION' ? `undo ${step.name}` : step.name;
-  return `<div class="step-card ${state.stepId === step.stepExecutionId ? 'selected' : ''} ${current ? 'current' : ''}"
+  return `<div class="step-card ${state.stepId === step.stepExecutionId ? 'selected' : ''} ${current ? 'current' : ''} ${step.waitFor ? 'timer' : ''}"
       style="--c:${RUN_STATUS_COLOR[step.status]}" data-step="${step.stepExecutionId}">
     <div class="name">${esc(label)}</div>
     <div class="type">${esc(step.type)}</div>
     <div class="meta">${pill(step.status, step.status === 'RUNNING' ? 'pulse' : '')}
       <span class="attempt-dots">${dots}</span><span class="small muted">${step.attemptCount}/${step.maxAttempts}</span></div>
-    ${bar}
+    ${bar}${out}
   </div>`;
 }
 
@@ -492,6 +588,8 @@ function renderStepDrawer() {
         <div class="row"><h3>${esc(step.kind === 'COMPENSATION' ? `undo ${step.name}` : step.name)}</h3>${pill(step.status)}
           <span class="small muted mono">${esc(step.type)}</span></div>
         <p class="small">${esc(STEP_STATES[step.status] || '')}</p>
+        ${step.waitFor ? `<p class="small">A durable timer of <b>${fmtDur(parseIsoDuration(step.waitFor))}</b>: due ${step.nextAttemptAt ? fmtClock(step.nextAttemptAt) : 'once its dependencies complete'}. The orchestrator completes it itself — no worker, no Kafka message — and because the due time is stored, it survives restarts.</p>` : ''}
+        ${Object.keys(step.output ?? {}).length ? `<h4>Output (handed to later steps)</h4><pre>${esc(JSON.stringify(step.output, null, 2))}</pre>` : ''}
         <p class="small muted">Step execution id <code>${esc(step.stepExecutionId)}</code> — the same for every attempt, which is why
           a handler can pass it to an external service as an idempotency key. Attempts used: ${step.attemptCount} of ${step.maxAttempts}.</p>
       </div>
@@ -515,7 +613,7 @@ function renderStepDrawer() {
 function buildTimeline(run) {
   const events = [];
   const add = (t, kind, title, detail, why, color) => events.push({ t: ms(t), iso: t, kind, title, detail, why, color });
-  add(run.createdAt, 'created', 'Run created, first step made eligible', `input: ${scenarioOf(run.input)}`, TIMELINE_WHY.created, 'var(--accent)');
+  add(run.createdAt, 'created', 'Run created, first step made eligible', `input: ${scenarioOf(run.input, run.workflow)}`, TIMELINE_WHY.created, 'var(--accent)');
   const firstComp = run.steps.find((s) => s.kind === 'COMPENSATION');
   const forwardByName = new Map(run.steps.filter((s) => s.kind !== 'COMPENSATION').map((s) => [s.name, s]));
   const succeededAt = (s) => ms(s?.attempts.find((x) => x.status === 'SUCCEEDED')?.finishedAt);
@@ -559,6 +657,7 @@ function buildTimeline(run) {
       add(a.startedAt, 'claimed', `Claimed ${label} — attempt ${a.attempt} of ${step.maxAttempts}`,
         `${waitText}${cmd?.deadline ? ` · lease until ${fmtClock(cmd.deadline)}` : ''}`,
         TIMELINE_WHY.claimed.replace('{attempt}', a.attempt), 'var(--s-running)');
+      if (step.waitFor) continue; // a timer is completed by the orchestrator itself: no command, no worker
       if (cmd?.publishedAt) {
         add(cmd.publishedAt, 'published', `Command for ${label} sent to Kafka`,
           `${fmtDur(ms(cmd.publishedAt) - ms(a.startedAt))} after the claim${cmd.publishAttempts > 1 ? ` · ${cmd.publishAttempts} send attempts` : ''}`,
@@ -586,6 +685,10 @@ function buildTimeline(run) {
       add(step.nextAttemptAt, 'waiting', `${label} eligible again`, `backoff ends ${ms(step.nextAttemptAt) > now() ? `in ${fmtDur(ms(step.nextAttemptAt) - now())}` : 'now'}`,
         TIMELINE_WHY.waiting, 'var(--s-retry)');
     }
+  }
+  for (const action of run.operatorActions ?? []) {
+    add(action.performedAt, 'operator', `Operator ${action.action === 'CANCEL' ? 'cancelled the run' : 'retried the failed compensation'} (${action.actor})`,
+      action.reason ? `"${action.reason}"` : `run was ${action.runStatusBefore}`, TIMELINE_WHY[action.action === 'CANCEL' ? 'cancelled' : 'retried'] ?? '', 'var(--accent)');
   }
   if (run.completedAt) add(run.completedAt, 'finished', `Run ${run.status}`, RUN_STATES[run.status], TIMELINE_WHY.finished, RUN_STATUS_COLOR[run.status]);
   return events.sort((a, b) => a.t - b.t);
@@ -928,11 +1031,19 @@ function wire() {
     const scenario = e.target.closest('[data-scenario]');
     if (scenario) {
       const s = SCENARIOS.find((x) => x.id === scenario.dataset.scenario);
-      try { await startOrder(orderInput(s.input)); } catch (err) { toast(`Could not start: ${esc(err.message)}`); }
+      try {
+        const created = await startOrder(orderInput(s.input), { workflow: s.workflow ?? WORKFLOW });
+        if (s.workflow) openRun(created.runId);
+      } catch (err) { toast(`Could not start: ${esc(err.message)}`); }
       return;
     }
     const row = e.target.closest('tr[data-run]');
     if (row) { openRun(row.dataset.run); return; }
+    const chip = e.target.closest('[data-chip]');
+    if (chip) { $('#run-filter').value = chip.dataset.chip; pollStats(); return; }
+    const wf = e.target.closest('[data-wf-step]');
+    if (wf) { state.stepId = wf.dataset.wfStep; renderRun(); $('#step-drawer').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); return; }
+    if (e.target.closest('[data-close-dialog]')) { e.target.closest('dialog').close(); return; }
     const card = e.target.closest('.step-card');
     if (card) { state.stepId = card.dataset.step; $$('.step-card').forEach((c) => c.classList.toggle('selected', c === card)); renderStepDrawer(); return; }
     const toggle = e.target.closest('.tl-toggle');
@@ -965,7 +1076,22 @@ function wire() {
     document.documentElement.dataset.theme = dark ? 'light' : 'dark';
   });
   $('#tour-btn').addEventListener('click', () => tourShow(0));
-  addEventListener('keydown', (e) => { if (e.key === 'Escape') tourEnd(); });
+  $('#keys-btn').addEventListener('click', () => $('#keys-dialog').showModal());
+  addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { tourEnd(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest('input, textarea, select, dialog')) return;
+    const views = ['live', 'run', 'engine', 'kafka', 'learn'];
+    if (e.key >= '1' && e.key <= '5') showView(views[+e.key - 1]);
+    else if (e.key === '?') $('#keys-dialog').showModal();
+    else if (e.key === '/') { e.preventDefault(); showView('learn'); $('#code-search').focus(); }
+    else if (e.key === 'g') $('#guide-toggle').click();
+    else if (e.key === 't') $('#theme-btn').click();
+    else if ((e.key === 'j' || e.key === 'k') && state.runs.length) {
+      const i = state.runs.findIndex((r) => r.runId === state.runId);
+      const next = state.runs[Math.min(state.runs.length - 1, Math.max(0, i + (e.key === 'j' ? 1 : -1)))] ?? state.runs[0];
+      openRun(next.runId, { switchView: state.view === 'run' }).then(renderRuns);
+    }
+  });
   addEventListener('resize', () => { if ($('.tour-card')) tourShow(tourIndex); });
 }
 
@@ -979,3 +1105,35 @@ setInterval(pollStats, 1000);
 setInterval(pollPayments, 3000);
 setInterval(pollKafka, 2000);
 setInterval(pollConsistency, 5000);
+
+// Operator actions: cancel a running run, or retry a compensation that failed for good.
+function operatorAction(kind) {
+  if (!state.runId) return;
+  const dialog = $('#op-dialog');
+  $('#op-title').textContent = kind === 'cancel' ? 'Cancel this run?' : 'Retry the failed compensation?';
+  $('#op-text').textContent = kind === 'cancel'
+    ? 'Nothing new will start. Steps already running finish, then every completed step is undone (the charge refunded, the stock released) and the run ends CANCELLED.'
+    : 'The undo step that failed is reopened with 3 more attempts; its earlier attempts stay in the history. Do this once the cause (say, the payment provider) is fixed.';
+  try { $('#op-actor').value = localStorage.getItem('ff-actor') || ''; } catch { /* storage unavailable */ }
+  $('#op-reason').value = '';
+  dialog.dataset.kind = kind;
+  dialog.showModal();
+  $('#op-reason').focus();
+}
+
+async function sendOperatorAction(kind) {
+  const actor = $('#op-actor').value.trim() || 'anonymous';
+  try { localStorage.setItem('ff-actor', actor); } catch { /* ignore */ }
+  try {
+    await api(`/api/runs/${state.runId}/${kind}`, {
+      method: 'POST', headers: { 'X-Actor': actor }, body: JSON.stringify({ reason: $('#op-reason').value.trim() || null }),
+    });
+    toast(kind === 'cancel' ? 'Cancel accepted: nothing new starts, completed steps are undone.' : 'Compensation reopened.');
+  } catch (e) { toast(`Refused: ${esc(e.message)}`); }
+  refreshRun();
+}
+$('#op-dialog form').addEventListener('submit', (e) => {
+  if (e.submitter?.value === 'confirm') sendOperatorAction($('#op-dialog').dataset.kind);
+});
+$('#run-cancel').addEventListener('click', () => operatorAction('cancel'));
+$('#run-retry').addEventListener('click', () => operatorAction('retry'));

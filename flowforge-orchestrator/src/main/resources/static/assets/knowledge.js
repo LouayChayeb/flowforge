@@ -162,7 +162,8 @@ export const RUN_STATES = {
   FAILED: 'A step failed for good and nothing before it needed undoing.',
   COMPENSATING: 'A step failed for good and nothing else is in flight; the undo steps for what already succeeded are running, most recently completed first.',
   COMPENSATED: 'Every undo step succeeded: the order failed, but cleanly — nothing is left half-done.',
-  COMPENSATION_FAILED: 'An undo step itself failed. The system cannot restore consistency on its own: a human has to look.',
+  COMPENSATION_FAILED: 'An undo step itself failed. The system cannot restore consistency on its own: a human has to look — and once the cause is fixed, an operator can retry it (POST /api/runs/{id}/retry).',
+  CANCELLED: 'An operator cancelled the run (POST /api/runs/{id}/cancel). Nothing new started, steps already running were allowed to finish, and everything that had completed was undone.',
 };
 
 export const STEP_STATES = {
@@ -193,6 +194,9 @@ export const TIMELINE_WHY = {
   compensating: 'A step failed for good. Once no other step was in flight, <code>WorkflowRun</code> appended an undo step for each completed step with <code>compensateWith</code>, most recently completed first. The run is now COMPENSATING.',
   finished: 'The run reached a terminal status and recorded <code>completed_at</code>. Nothing can change it any more.',
   waiting: 'Backoff in progress: the dispatcher will claim this step again once <code>next_attempt_at</code> has passed.',
+  timer: 'A durable timer (a WAIT step). Its due time was stored in <code>next_attempt_at</code> when its dependencies completed; the dispatcher claimed it once due and <code>StepStateService.fireTimer()</code> completed it in the same transaction — no command, no worker. A restart in between changes nothing: the due time is in the database.',
+  cancelled: 'An operator called <code>POST /api/runs/{id}/cancel</code>. <code>OperatorService.cancel()</code> locked the steps and the run, recorded an <code>operator_action</code> row, and <code>WorkflowRun.cancel()</code> withdrew every eligible step. Once nothing was in flight, the completed steps were compensated.',
+  retried: 'An operator called <code>POST /api/runs/{id}/retry</code>. <code>WorkflowRun.retryCompensation()</code> reopened the failed undo step with extra attempts (its history is kept) and put the run back into COMPENSATING.',
   inflight: 'The command is with a worker (or queued in Kafka). If no result comes back before the lease expires, the recovery sweeper will time this attempt out.',
 };
 
@@ -260,6 +264,11 @@ export const GLOSSARY = [
   ['Consumer group', 'Consumers sharing the work of a topic: each partition is assigned to exactly one member at a time.'],
   ['Offset / lag', 'Offset: a position in a partition. Committed offset: how far a group has processed. Lag: messages written but not yet processed.'],
   ['Rebalance', 'Reassigning partitions when a group member joins or leaves (or stops sending heartbeats for the session timeout).'],
+  ['Step output', 'A small JSON object a step returns on success (at most 64 KB), stored on its row and handed to every later step: release-inventory reads the reservationId reserve-inventory produced, send-confirmation the tracking number.'],
+  ['Durable timer', 'A WAIT step: "wait 20 s, then continue". Its due time is stored, so it survives restarts and needs no worker; the orchestrator completes it itself.'],
+  ['Cancellation', 'An operator stops a running run: nothing new starts, running steps finish, completed ones are undone, and the run ends CANCELLED.'],
+  ['Operator action', 'A manual intervention (cancel, retry compensation), recorded with who, why and the status before it in operator_action — an audit trail.'],
+  ['Problem details (RFC 9457)', 'The standard JSON error format the API returns, with a stable code (RUN_NOT_FOUND, OPERATION_NOT_ALLOWED…), a type URN and the trace id.'],
   ['Invariant', 'A rule the stored data must always satisfy, e.g. "a completed step has exactly one successful attempt".'],
 ];
 
@@ -274,7 +283,8 @@ export const CODE_MAP = [
   ]},
   { module: 'flowforge-common', pkg: 'step', text: 'The contract between the engine and step code.', classes: [
     ['StepHandler', 'interface', 'Implemented once per step type.', [['stepType()', 'which type it handles, e.g. CHARGE_PAYMENT'], ['execute(StepContext)', 'does the work, returns a StepHandlerResult']]],
-    ['StepContext', 'record', 'What a handler receives: runId, stepExecutionId (the idempotency key), stepName, attempt, input.', []],
+    ['StepContext', 'record', 'What a handler receives: runId, stepExecutionId (the idempotency key), stepName, attempt, input, and the outputs of completed steps.', [['outputOf(step)', 'what an earlier step produced'], ['requireOutput(step, key)', 'one value, or a permanent failure if it is missing']]],
+    ['StepFailureException', 'sealed exception', 'What a handler throws instead of building a failure result.', [['Retryable', 'temporary: retried with backoff'], ['Permanent', 'never works: fails the step'], ['InvalidInput', 'a Permanent for bad input']]],
     ['StepHandlerResult', 'record', 'What a handler returns.', [['succeeded()', ''], ['retryableFailure(msg)', 'try again later'], ['permanentFailure(msg)', 'give up on this step']]],
     ['StepCommandProcessor', 'class', 'Runs a command against the right handler, safely.', [
       ['process(StepCommand)', 'empty if the deadline passed; unknown type → permanent; exception → retryable'],
@@ -285,7 +295,17 @@ export const CODE_MAP = [
     ['RunController', 'REST', '/api/runs', [['recent()', 'GET — newest runs (dashboard)'], ['get()', 'GET /{id} — full history'], ['commands()', 'GET /{id}/commands — its outbox rows']]],
     ['AdminController', 'REST', '/api/admin', [['consistency()', 'run the invariants'], ['invariants()', 'their names and meaning'], ['stats()', 'counters + database counts'], ['config()', 'this instance\'s settings'], ['kafka()', 'topics, groups, lag']]],
     ['WorkflowDtos / RunDtos', 'records', 'Request and response bodies, with from() mappers from the entities.', []],
-    ['ApiExceptionHandler', 'advice', 'NotFoundException → 404, invalid definition → 400, as problem details.', []],
+    ['ApiExceptionHandler', 'advice', 'Every error as an RFC 9457 problem with a stable code, details and the trace id.', [['domain()', 'FlowForgeException → its own status and code'], ['concurrency()', 'lock conflicts → 409, safe to retry'], ['handleMethodArgumentNotValid()', '400 listing every invalid field'], ['unexpected()', '500, logged, no internals leaked']]],
+  ]},
+  { module: 'flowforge-orchestrator', pkg: 'error', text: 'The exception hierarchy.', classes: [
+    ['ErrorCode', 'enum', 'Each error code with its HTTP status, title and type URN.', []],
+    ['FlowForgeException', 'abstract exception', 'Base of every domain error: a code plus structured details.', []],
+    ['NotFoundException', 'exceptions', 'WorkflowNotFound, RunNotFound, StepNotFound → 404.', []],
+    ['OperationNotAllowedException', 'exception', 'An operator action its current state forbids → 409.', []],
+  ]},
+  { module: 'flowforge-orchestrator', pkg: 'operator', text: 'Manual interventions, audited.', classes: [
+    ['OperatorService', 'service', 'Cancel and retry, each in one transaction with its audit row.', [['cancel(runId, actor, reason)', 'locks steps then run, WorkflowRun.cancel(), wakes the engine'], ['retryCompensation(runId, actor, reason)', 'reopens the failed undo step with 3 more attempts']]],
+    ['OperatorAction', 'entity', 'Who did what to which run, why, and the status before.', []],
   ]},
   { module: 'flowforge-orchestrator', pkg: 'definition', text: 'Workflow recipes.', classes: [
     ['WorkflowDefinition', 'entity', 'Name, version, ordered steps.', [['addStep(name, type, maxAttempts, compensationType)', '']]],

@@ -194,6 +194,7 @@ body.guide .explain { display: block; }
 .c-COMPENSATING { --c: var(--s-compensating); }
 .c-COMPENSATED { --c: var(--s-compensated); }
 .c-COMPENSATION_FAILED { --c: var(--s-compfailed); }
+.c-CANCELLED { --c: var(--s-pending); }
 .c-FORWARD { --c: var(--accent); }
 .c-COMPENSATION { --c: var(--s-compensated); }
 .pulse::before {
@@ -290,6 +291,8 @@ tbody tr.selected { background: var(--accent-soft); }
 .step-card.current { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); }
 .step-card .name { font-weight: 700; font-size: 13px; }
 .step-card .type { font: 11px var(--mono); color: var(--muted); }
+.step-card.timer { border-style: dashed; }
+.output { font: 11.5px var(--mono); color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
 .step-card .meta { margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .arrow { align-self: center; width: 26px; text-align: center; color: var(--faint); font-size: 16px; }
 .attempt-dots { display: inline-flex; gap: 3px; }
@@ -392,3 +395,51 @@ mark { background: color-mix(in srgb, var(--s-retry) 35%, transparent); color: i
 .tour-card .step-no { font-size: 12px; color: var(--muted); }
 .tour-card h3 { margin: 2px 0 6px; font-size: 15px; }
 .tour-card .row { margin-top: 10px; }
+
+/* ---------- waterfall ---------- */
+.waterfall { position: relative; display: flex; flex-direction: column; gap: 3px; }
+.wf-row { display: grid; grid-template-columns: 170px 1fr 64px; align-items: center; border-radius: 6px; cursor: pointer; padding: 2px 0; }
+.wf-row:hover { background: var(--panel-2); }
+.wf-row.selected { background: var(--accent-soft); }
+.wf-row.undo .wf-label { font-style: italic; }
+.wf-axis { cursor: default; } .wf-axis:hover { background: none; }
+.wf-label { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 8px 0 4px; display: flex; align-items: center; gap: 6px; }
+.wf-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--muted)); flex: none; display: inline-block; }
+.wf-track { position: relative; height: 18px; border-radius: 4px;
+  background: repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), var(--line) calc(25% - 1px) 25%); }
+.wf-track.ticks { height: 16px; background: none; font-size: 11px; color: var(--muted); }
+.wf-track.ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.wf-track.ticks span:first-child { transform: none; } .wf-track.ticks span:last-child { transform: translateX(-100%); }
+.wf-dur { text-align: right; padding-right: 4px; font-variant-numeric: tabular-nums; }
+.wf-seg { position: absolute; top: 3px; height: 12px; border-radius: 3px; background: var(--c, var(--s-running)); min-width: 3px; }
+.wf-seg.live { background: repeating-linear-gradient(45deg, var(--c) 0 6px, color-mix(in srgb, var(--c) 55%, transparent) 6px 12px);
+  background-size: 17px 17px; animation: wf-live 0.8s linear infinite; }
+.wf-seg.wait { top: 4px; height: 10px; border: 1px dashed color-mix(in srgb, var(--s-retry) 75%, transparent);
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--s-retry) 40%, transparent) 0 3px, transparent 3px 7px); }
+.wf-seg.mark { background: none; top: 0; height: auto; font-size: 13px; line-height: 18px; transform: translateX(-50%); min-width: 0; }
+.wf-overlay { position: absolute; inset: 0 0 18px 0; display: grid; grid-template-columns: 170px 1fr 64px; pointer-events: none; }
+.wf-overlay .wf-now-track { height: auto; background: none; }
+.wf-now { position: absolute; top: 0; bottom: 0; border-left: 2px solid var(--accent); }
+@keyframes wf-live { to { background-position: 17px 0; } }
+@media (prefers-reduced-motion: reduce) { .wf-seg.live { animation: none; } }
+@media (max-width: 640px) { .wf-row, .wf-overlay { grid-template-columns: 104px 1fr 48px; } }
+
+/* ---------- status chips ---------- */
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 16px 6px; }
+.chips:empty { display: none; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; transition: border-color .15s, background .15s; }
+.chip .wf-dot { background: var(--c, var(--muted)); }
+.chip:hover { border-color: var(--c, var(--accent)); }
+.chip.on { background: var(--accent-soft); border-color: var(--accent); }
+.chips .spacer { flex: 1; }
+
+/* ---------- dialogs ---------- */
+.modal { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); padding: 20px;
+  width: min(440px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0, 0, 0, .25); }
+.modal::backdrop { background: rgba(10, 14, 20, .45); }
+.modal h3 { margin: 0 0 8px; }
+.modal label { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+.modal input, .modal textarea { font: inherit; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+.modal .row { gap: 8px; margin-top: 12px; }
+kbd { font: 12px ui-monospace, monospace; padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: var(--panel-2); }

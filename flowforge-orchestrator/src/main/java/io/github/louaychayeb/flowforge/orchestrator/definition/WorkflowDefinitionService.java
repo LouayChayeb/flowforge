@@ -59,6 +59,14 @@ public class WorkflowDefinitionService {
      * Step types are not checked here: handlers live in the workers, which the orchestrator does not know.
      * A step whose type no worker handles fails permanently when it runs.
      */
+    /** The latest version of every registered workflow, steps loaded. */
+    @Transactional(readOnly = true)
+    public List<WorkflowDefinition> latestOfEach() {
+        List<WorkflowDefinition> all = definitions.findLatestOfEach();
+        all.forEach(definition -> definition.getSteps().size());
+        return all;
+    }
+
     private void validate(List<NewStep> steps) {
         Set<String> names = new HashSet<>();
         for (NewStep step : steps) {

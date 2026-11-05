@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/workflows")
@@ -44,6 +45,12 @@ public class WorkflowController {
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{name}").buildAndExpand(definition.getName()).toUri();
         return ResponseEntity.created(location).body(WorkflowResponse.from(definition));
+    }
+
+    /** The latest version of every registered workflow. */
+    @GetMapping
+    public List<WorkflowResponse> all() {
+        return definitionService.latestOfEach().stream().map(WorkflowResponse::from).toList();
     }
 
     @GetMapping("/{name}")

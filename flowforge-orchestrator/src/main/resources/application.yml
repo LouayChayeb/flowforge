@@ -19,6 +19,8 @@ spring:
         size: 3
   kafka:
     bootstrap-servers: ${FLOWFORGE_KAFKA_BOOTSTRAP:localhost:9092}
+    # Shows up as the consumer's identity in Kafka (and in the dashboard): pod name on Kubernetes, host locally.
+    client-id: flowforge-orchestrator-${HOSTNAME:${COMPUTERNAME:local}}-${server.port}
     consumer:
       group-id: flowforge-orchestrator
       # Offsets are committed by the listener container after each result is applied (at-least-once).

@@ -57,6 +57,16 @@ public class EngineMetrics {
         outboxFailures.increment();
     }
 
+    /** Every counter of this instance, for the dashboard. Counters start at zero when the process starts. */
+    public Snapshot snapshot() {
+        return new Snapshot((long) stepsClaimed.count(), (long) resultsApplied.count(), (long) resultsStale.count(),
+                (long) leasesExpired.count(), (long) outboxPublished.count(), (long) outboxFailures.count());
+    }
+
+    public record Snapshot(long stepsClaimed, long resultsApplied, long resultsStale, long leasesExpired,
+                           long outboxPublished, long outboxFailures) {
+    }
+
     public double staleResults() {
         return resultsStale.count();
     }

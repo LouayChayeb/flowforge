@@ -169,6 +169,14 @@ public class ConsistencyChecker {
         return new ConsistencyReport(clock.instant(), workflow, INVARIANTS.size(), violations.isEmpty(), violations);
     }
 
+    /** The name and meaning of every invariant, whether or not it currently holds. */
+    public List<InvariantInfo> invariants() {
+        return INVARIANTS.stream().map(i -> new InvariantInfo(i.name(), i.description())).toList();
+    }
+
+    public record InvariantInfo(String name, String description) {
+    }
+
     record Invariant(String name, String description, String sql) {
     }
 }

@@ -72,7 +72,33 @@ class OrderHandlersTest {
                 .isEqualTo(StepOutcome.SUCCEEDED);
     }
 
+    @Test
+    void aFlakyCarrierFailsRetryablyForTheRequestedNumberOfAttempts() {
+        Map<String, Object> flaky = new HashMap<>(VALID_ORDER);
+        flaky.put("shipmentFailures", 2);
+        CreateShipmentHandler handler = new CreateShipmentHandler();
+
+        StepHandlerResult first = handler.execute(context(flaky, 1));
+        assertThat(first.outcome()).isEqualTo(StepOutcome.RETRYABLE_FAILURE);
+        assertThat(first.errorMessage()).isEqualTo("Carrier API timed out (attempt 1)");
+        assertThat(handler.execute(context(flaky, 2)).outcome()).isEqualTo(StepOutcome.RETRYABLE_FAILURE);
+        assertThat(handler.execute(context(flaky, 3)).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
+    }
+
+    @Test
+    void aRefundCanBeMadeToFailForTheCompensationFailedDemo() {
+        Map<String, Object> stuck = new HashMap<>(VALID_ORDER);
+        stuck.put("refundFails", true);
+
+        assertThat(new RefundPaymentHandler().execute(context(stuck)).outcome())
+                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+    }
+
     private static StepContext context(Map<String, Object> input) {
-        return new StepContext(UUID.randomUUID(), UUID.randomUUID(), "step", 1, input);
+        return context(input, 1);
+    }
+
+    private static StepContext context(Map<String, Object> input, int attempt) {
+        return new StepContext(UUID.randomUUID(), UUID.randomUUID(), "step", attempt, input);
     }
 }

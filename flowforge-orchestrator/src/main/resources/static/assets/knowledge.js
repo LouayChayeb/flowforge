@@ -6,7 +6,7 @@ export const COMPONENTS = {
     title: 'REST API',
     role: 'Accepts workflow definitions and order requests, and reports progress. It never does step work itself.',
     how: [
-      'Starting a run is one database transaction: <code>WorkflowRunService.start()</code> loads the latest version of the workflow, <code>WorkflowRun.start()</code> creates one <code>StepExecution</code> per step and makes only the first one eligible (<code>next_attempt_at = now</code>). Then the API answers <b>202 Accepted</b> with a <code>Location</code> header.',
+      'Starting a run is one database transaction: <code>WorkflowRunService.start()</code> loads the latest version of the workflow, <code>WorkflowRun.start()</code> creates one <code>StepExecution</code> per step and makes every step without dependencies eligible (<code>next_attempt_at = now</code>). Then the API answers <b>202 Accepted</b> with a <code>Location</code> header.',
       'Everything after that happens in the background loops, so a slow worker never makes an HTTP request slow, and a crash after the 202 loses nothing: the run is already in PostgreSQL.',
     ],
     code: [
@@ -38,7 +38,7 @@ export const COMPONENTS = {
     title: 'Dispatcher (claim loop)',
     role: 'Finds steps that are ready, claims them, and writes the command to send — all in one transaction.',
     how: [
-      '<code>EngineScheduler.dispatch()</code> runs every <span data-config="dispatchIntervalMs"></span> and calls <code>StepDispatcher.dispatchOnce()</code> until there is nothing left, which calls <code>StepStateService.claim()</code>.',
+      '<code>EngineWakeup</code> runs it the moment a step becomes ready — right after the transaction that made it ready commits — and <code>EngineScheduler.dispatch()</code> runs it every <span data-config="dispatchIntervalMs"></span> as a safety net. Either way it calls <code>StepDispatcher.dispatchOnce()</code> until there is nothing left, which calls <code>StepStateService.claim()</code>.',
       'For each locked step, <code>StepExecution.start()</code> moves it to <code>RUNNING</code>, appends a new <code>StepAttempt</code> and sets <code>lease_expires_at = now + lease</code>. The <code>StepCommand</code> for the worker is saved as an <code>OutboxEvent</code> <b>in the same transaction</b>.',
       '<code>SKIP LOCKED</code> is what lets several orchestrators run this loop at once: a row another instance is claiming is skipped instead of waited for, so no step is ever claimed twice.',
     ],
@@ -56,7 +56,7 @@ export const COMPONENTS = {
     role: 'Sends the committed commands to Kafka and marks them sent.',
     how: [
       'Why an outbox: committing to the database and sending to Kafka are two systems. Done separately, a crash between them either loses a command (claimed but never sent) or invents one (sent but rolled back). Writing the command into the same transaction as the claim makes them one atomic fact; this loop only has to deliver it.',
-      '<code>EngineScheduler.publishOutbox()</code> runs every <span data-config="outboxIntervalMs"></span>. <code>OutboxPublisher.publishPending()</code> locks a batch of pending rows, sends them all, then waits for every acknowledgement (<code>acks=all</code>, idempotent producer) under one shared timeout, and marks the acknowledged ones published.',
+      '<code>EngineWakeup</code> runs it as soon as a claim commits (and <code>EngineScheduler.publishOutbox()</code> every <span data-config="outboxIntervalMs"></span> as a safety net). <code>OutboxPublisher.publishPending()</code> locks a batch of pending rows, sends them all, then waits for every acknowledgement (<code>acks=all</code>, idempotent producer) under one shared timeout, and marks the acknowledged ones published.',
       'Sending the whole batch before waiting is a Phase 5 fix: the one-at-a-time version capped throughput at ~28 runs/s; batching raised it to ~40.',
     ],
     code: [
@@ -113,10 +113,10 @@ export const COMPONENTS = {
     title: 'Result listener',
     role: 'Applies each result to the step, then moves the run forward, retries, compensates or finishes.',
     how: [
-      '<code>StepResultListener.onResult()</code> calls <code>StepStateService.recordOutcome()</code>, which locks the step row (<code>findByIdForUpdate</code>) and checks that the result is for the step\'s <b>current, still-running</b> attempt. If not — a duplicate, or an attempt already timed out — it throws <code>StaleAttemptException</code> and the result is counted as <b>stale</b> and ignored.',
-      'Success: <code>StepExecution.complete()</code> → <code>WorkflowRun.onStepCompleted()</code> makes the next step eligible, or ends the run.',
+      '<code>StepResultListener.onResult()</code> calls <code>StepStateService.recordOutcome()</code>, which locks the step row and then the run row (so outcomes of parallel steps are applied one after the other) and checks that the result is for the step\'s <b>current, still-running</b> attempt. If not — a duplicate, or an attempt already timed out — it throws <code>StaleAttemptException</code> and the result is counted as <b>stale</b> and ignored.',
+      'Success: <code>StepExecution.complete()</code> → <code>WorkflowRun.onStepCompleted()</code> makes every step whose dependencies are now all complete eligible — several at once if they are independent — or ends the run.',
       'Retryable failure: <code>failRetryable()</code> → <code>RETRY_WAIT</code> with <code>next_attempt_at = now + backoff</code>, until the step\'s attempt limit; then it fails for good.',
-      'Permanent failure: <code>failPermanently()</code> → <code>WorkflowRun.onStepFailed()</code>: append compensations in reverse order and move to <code>COMPENSATING</code>, or straight to <code>FAILED</code> if nothing needs undoing.',
+      'Permanent failure: <code>failPermanently()</code> → <code>WorkflowRun.onStepFailed()</code>: nothing new starts; once no parallel sibling is still in flight, compensations are appended for the completed steps, most recently completed first, and the run moves to <code>COMPENSATING</code> — or straight to <code>FAILED</code> if nothing needs undoing.',
     ],
     code: [
       ['StepResultListener.onResult()', '@KafkaListener on step-results'],
@@ -157,16 +157,16 @@ export const COMPONENTS = {
 };
 
 export const RUN_STATES = {
-  RUNNING: 'Forward steps are being executed one by one.',
+  RUNNING: 'Forward steps are being executed: each as soon as its dependencies completed, independent ones in parallel.',
   COMPLETED: 'Every forward step succeeded.',
   FAILED: 'A step failed for good and nothing before it needed undoing.',
-  COMPENSATING: 'A step failed for good; the undo steps for what already succeeded are running, most recent first.',
+  COMPENSATING: 'A step failed for good and nothing else is in flight; the undo steps for what already succeeded are running, most recently completed first.',
   COMPENSATED: 'Every undo step succeeded: the order failed, but cleanly — nothing is left half-done.',
   COMPENSATION_FAILED: 'An undo step itself failed. The system cannot restore consistency on its own: a human has to look.',
 };
 
 export const STEP_STATES = {
-  PENDING: 'Waiting for its turn. It becomes claimable when the step before it completes (next_attempt_at is set).',
+  PENDING: 'Waiting for its turn. It becomes claimable when every step it depends on has completed (next_attempt_at is set).',
   RUNNING: 'Claimed: an attempt is open and the step holds a lease until a result arrives or the lease expires.',
   RETRY_WAIT: 'The last attempt failed in a retryable way (or timed out). Claimable again once its backoff is over.',
   COMPLETED: 'One attempt succeeded. Terminal: no later message can change it.',
@@ -182,28 +182,28 @@ export const ATTEMPT_STATES = {
 };
 
 export const TIMELINE_WHY = {
-  created: 'POST /runs → <code>WorkflowRunService.start()</code>. One transaction stores the run and one <code>step_execution</code> row per step; only the first is made eligible.',
+  created: 'POST /runs → <code>WorkflowRunService.start()</code>. One transaction stores the run and one <code>step_execution</code> row per step; the steps without dependencies are made eligible, and <code>EngineWakeup</code> runs the dispatcher as soon as it commits.',
   claimed: '<code>StepStateService.claim()</code> locked this step with <code>SKIP LOCKED</code>, opened attempt <b>{attempt}</b> (<code>StepExecution.start()</code>), set the lease and wrote the command to the outbox — one transaction.',
   published: '<code>OutboxPublisher.publishPending()</code> sent the command to <code>flowforge.step-commands</code>, got Kafka\'s acknowledgement, and marked the outbox row published.',
-  succeeded: 'A worker ran the handler and reported success. <code>StepStateService.recordOutcome()</code> locked the step, checked this is its current attempt, and <code>StepExecution.complete()</code> + <code>WorkflowRun.onStepCompleted()</code> made the next step eligible (or finished the run).',
+  succeeded: 'A worker ran the handler and reported success. <code>StepStateService.recordOutcome()</code> locked the step, checked this is its current attempt, and <code>StepExecution.complete()</code> + <code>WorkflowRun.onStepCompleted()</code> made every step whose dependencies are now complete eligible (or finished the run).',
   retryable: 'A worker reported a retryable failure. <code>StepExecution.failRetryable()</code> put the step in <code>RETRY_WAIT</code> with a backoff from <code>RetryPolicy</code> (or failed it, if this was its last allowed attempt).',
   exhausted: 'A worker reported a retryable failure, but this was the step\'s last allowed attempt, so <code>StepExecution.failRetryable()</code> failed the step for good and <code>WorkflowRun.onStepFailed()</code> decided what the run does next — here, compensate.',
   permanent: 'A worker reported a permanent failure. <code>StepExecution.failPermanently()</code> ended the step and <code>WorkflowRun.onStepFailed()</code> decided what the run does next.',
   timedout: 'No result before the lease expired. The recovery sweeper (<code>StepStateService.recoverExpiredLeases()</code>) locked the step, re-checked it, and <code>StepExecution.expireLease()</code> closed the attempt as TIMED_OUT.',
-  compensating: '<code>WorkflowRun.onStepFailed()</code> walked back over the completed steps and appended an undo step for each one with <code>compensateWith</code>, most recent first. The run is now COMPENSATING.',
+  compensating: 'A step failed for good. Once no other step was in flight, <code>WorkflowRun</code> appended an undo step for each completed step with <code>compensateWith</code>, most recently completed first. The run is now COMPENSATING.',
   finished: 'The run reached a terminal status and recorded <code>completed_at</code>. Nothing can change it any more.',
   waiting: 'Backoff in progress: the dispatcher will claim this step again once <code>next_attempt_at</code> has passed.',
   inflight: 'The command is with a worker (or queued in Kafka). If no result comes back before the lease expires, the recovery sweeper will time this attempt out.',
 };
 
 export const JOURNEY = [
-  ['You start an order', 'POST /api/workflows/order-processing/runs. <code>WorkflowRunService.start()</code> stores the run and its five steps in one transaction and answers 202. Only <i>validate-order</i> is eligible.'],
-  ['A dispatcher claims the first step', 'Within ~0.5 s, an orchestrator\'s dispatch loop locks the step (<code>FOR UPDATE SKIP LOCKED</code>), opens attempt 1 with a 60 s lease, and writes a <code>StepCommand</code> to the outbox — one transaction.'],
-  ['The outbox publisher sends it', 'Within ~0.2 s the publisher sends pending commands to <code>flowforge.step-commands</code> (keyed by run id), waits for the acknowledgements, and marks them published.'],
+  ['You start an order', 'POST /api/workflows/order-processing/runs. <code>WorkflowRunService.start()</code> stores the run and its six steps in one transaction and answers 202. Only <i>validate-order</i> is eligible — it is the one step with no dependencies.'],
+  ['A dispatcher claims the first step', 'Right after that commit, <code>EngineWakeup</code> runs the dispatch loop: it locks the step (<code>FOR UPDATE SKIP LOCKED</code>), opens attempt 1 with a 60 s lease, and writes a <code>StepCommand</code> to the outbox — one transaction.'],
+  ['The outbox publisher sends it', 'As soon as the claim commits, the publisher sends pending commands to <code>flowforge.step-commands</code> (keyed by run id), waits for the acknowledgements, and marks them published.'],
   ['A worker executes it', 'The worker owning that partition checks the deadline, runs <code>ValidateOrderHandler</code>, sends a <code>StepResult</code>, waits for the ack, and only then commits the command\'s offset.'],
-  ['The orchestrator applies the result', '<code>StepResultListener</code> locks the step, checks the attempt is current, marks it COMPLETED, and the run makes <i>reserve-inventory</i> eligible. The loop repeats for every step.'],
+  ['The orchestrator applies the result', '<code>StepResultListener</code> locks the step, checks the attempt is current, marks it COMPLETED, and the run makes <i>reserve-inventory</i> and <i>check-fraud</i> eligible together — they run in parallel, and <i>charge-payment</i> waits for both. The loop repeats for every step.'],
   ['A step fails — temporarily', 'A retryable failure puts the step in RETRY_WAIT for 1 s, then 2 s, 4 s… (<code>RetryPolicy</code>), up to its attempt limit. Try <i>Flaky carrier</i>.'],
-  ['A step fails — for good', 'A permanent failure (declined card, impossible address) or exhausted attempts make the run compensate: undo steps are appended in reverse order — refund, then release inventory. Try <i>Payment declined</i> or <i>Undeliverable address</i>.'],
+  ['A step fails — for good', 'A permanent failure (declined card, impossible address) or exhausted attempts make the run compensate: nothing new starts, any parallel step still in flight is allowed to finish, then undo steps run for what completed, most recent first — refund, then release inventory. Try <i>Fraud detected</i>, <i>Payment declined</i> or <i>Undeliverable address</i>.'],
   ['A worker dies mid-step', 'Its command was never committed, so Kafka redelivers it to another worker after the 10 s session timeout, and the step runs again with the same idempotency key. If no worker gets it, the lease expires and the sweeper retries. Try <i>Slow shipment</i> and kill the worker.'],
   ['A result arrives twice, or late', 'The listener only accepts a result for the step\'s current running attempt; anything else is stale and ignored. Visible as <i>stale results</i> on the Engine tab.'],
   ['The run finishes', 'COMPLETED, COMPENSATED, FAILED or COMPENSATION_FAILED, with <code>completed_at</code>. The consistency checker can verify its whole history at any time.'],
@@ -215,6 +215,8 @@ export const FAILURES = [
   ['A worker dies mid-step', 'Redelivery after the 10 s session timeout; if nothing comes back, the lease expires and the sweeper retries.', 'Slow shipment + kill'],
   ['A step keeps failing', 'Bounded retries with exponential backoff, retryable vs permanent errors.', 'Flaky carrier, Carrier down'],
   ['A business step fails after others succeeded', 'Saga compensation: undo steps run in reverse order.', 'Payment declined, Undeliverable'],
+  ['A step fails while a parallel sibling is still running', 'No new step starts; the sibling finishes (and is undone if it succeeded) before compensation begins.', 'Fraud detected'],
+  ['A charge step runs twice (worker died after charging)', 'The payment provider remembers the idempotency key and replays the first charge; the customer is charged once.', 'Engine tab: payment provider'],
   ['An undo step fails too', 'The run stops in COMPENSATION_FAILED for a human to resolve.', 'Refund fails'],
   ['Two orchestrators claim at once / a result races a lease expiry', 'SKIP LOCKED for claims; row locks for results and expiry, so exactly one wins.', 'Run two orchestrators'],
   ['Workers fall behind', 'Commands carry their deadline; expired ones are skipped so a backlog drains instead of storming.', 'Send 20 mixed orders'],
@@ -224,7 +226,7 @@ export const GUARANTEES = {
   yes: [
     'Each logical step attempt changes the stored state <b>exactly once</b>: duplicates and late results are rejected.',
     'A run never loses a step: claims and commands commit together, and every claimed attempt either gets a result or times out.',
-    'Steps of a run execute one at a time, in order; a finished run can never change again.',
+    'A step starts only after every step it depends on completed (independent steps run in parallel); undo steps run one at a time, after everything in flight finished; a finished run can never change again.',
     'Several orchestrators and workers can run at once without claiming the same step twice.',
   ],
   no: [
@@ -237,6 +239,9 @@ export const GUARANTEES = {
 export const GLOSSARY = [
   ['Workflow definition', 'A named, versioned list of steps (the recipe). Registering it again creates version n+1; running orders keep their version.'],
   ['Run', 'One execution of a workflow for one input, e.g. one order.'],
+  ['Dependencies / parallel steps', 'A step lists the earlier steps it waits for (dependsOn). Steps whose dependencies are all complete run at the same time; a step with none starts at once. Omitted, it waits for the previous step.'],
+  ['Wake-up (instant dispatch)', 'Running the dispatch and outbox loops the moment work appears, after the transaction that created it commits, instead of only on a timer. The timer stays as a safety net.'],
+  ['Payment provider', 'flowforge-payments: a simulated external service that remembers idempotency keys. The proof that a step executed twice charges once.'],
   ['Step execution', 'One logical step of a run. Its id stays the same across retries, which is what makes it usable as an idempotency key.'],
   ['Attempt', 'One try of a step. Attempts are appended, never overwritten, so the full history of failures stays visible.'],
   ['Transactional outbox', 'Writing an outgoing message into the database in the same transaction as the state change, and sending it afterwards. Makes "changed state" and "will send message" one atomic fact.'],
@@ -289,11 +294,11 @@ export const CODE_MAP = [
     ['WorkflowDefinitionRepository', 'repository', 'findFirstByNameOrderByVersionDesc, findLatestVersion, findLatestOfEach.', []],
   ]},
   { module: 'flowforge-orchestrator', pkg: 'run', text: 'Runs, steps, attempts and their state machines — the domain model.', classes: [
-    ['WorkflowRun', 'entity', 'One order. Owns its steps and the run state machine.', [
-      ['start(definition, input, now)', 'creates the forward steps, makes the first eligible'],
-      ['onStepCompleted(step, now)', 'next step, or COMPLETED / COMPENSATED'],
-      ['onStepFailed(step, now)', 'append compensations → COMPENSATING, else FAILED; during compensation → COMPENSATION_FAILED'],
-      ['currentStep()', 'the one step that may run now']]],
+    ['WorkflowRun', 'entity', 'One order. Owns its steps, their dependency graph and the run state machine.', [
+      ['start(definition, input, now)', 'creates the forward steps, makes those without dependencies eligible'],
+      ['onStepCompleted(step, now)', 'every step whose dependencies are now complete becomes eligible; or COMPLETED / COMPENSATED'],
+      ['onStepFailed(step, now)', 'waits for in-flight siblings, then appends compensations (most recently completed first) → COMPENSATING, else FAILED; during compensation → COMPENSATION_FAILED'],
+      ['activeSteps() / currentStep()', 'the steps that may run now (several with parallel steps)']]],
     ['StepExecution', 'entity', 'One logical step; the step state machine.', [
       ['start(now, lease)', 'claim: RUNNING, new attempt, lease'], ['complete(attempt, now)', ''],
       ['failRetryable(attempt, error, backoff, now)', 'RETRY_WAIT or FAILED if out of attempts'],
@@ -307,6 +312,8 @@ export const CODE_MAP = [
   ]},
   { module: 'flowforge-orchestrator', pkg: 'engine', text: 'The background loops that drive execution.', classes: [
     ['EngineScheduler', 'component', 'The three @Scheduled loops; each drains its work before sleeping.', [['dispatch()', ''], ['publishOutbox()', ''], ['recoverExpiredLeases()', '']]],
+    ['EngineWakeup', 'component', 'Runs the dispatch and outbox loops right after a commit makes work visible (and when a retry backoff ends), instead of waiting for their ticks. Cut light-load latency from ~2.5 s to well under a second.', [['onStepsMayBeReady(event)', 'after commit: dispatch now, or at the end of a backoff'], ['onCommandsWritten(event)', 'after commit: publish now']]],
+    ['EngineEvents', 'records', 'StepsMayBeReady and CommandsWritten, published inside the engine\'s transactions.', []],
     ['StepDispatcher', 'component', 'dispatchOnce(): one batch of claims.', []],
     ['StepStateService', 'service', 'Every state change of a step goes through here.', [
       ['claim(limit)', 'lock, start, write outbox — one transaction'],
@@ -332,6 +339,7 @@ export const CODE_MAP = [
     ['InsightQueries', 'component', 'recentRuns(), commandsOfRun(), databaseStats().', []],
     ['KafkaInspector', 'component', 'Uses Kafka\'s AdminClient to describe topics, consumer groups, assignments and lag.', []],
     ['EngineSettings', 'component', 'The configuration this instance runs with.', []],
+    ['PaymentsInspector', 'component', 'Reads the payment provider\'s ledger for the dashboard.', []],
   ]},
   { module: 'flowforge-worker', pkg: '(root)', text: 'The execution layer.', classes: [
     ['StepCommandListener', 'Kafka listener', 'onCommand(): process, send the result, wait for the ack, then the offset is committed.', []],
@@ -342,10 +350,22 @@ export const CODE_MAP = [
   { module: 'flowforge-worker', pkg: 'handlers', text: 'The demo order steps (one class per step type).', classes: [
     ['ValidateOrderHandler', 'VALIDATE_ORDER', 'Permanent failure if orderId or customerId is missing or amount ≤ 0.', []],
     ['ReserveInventoryHandler', 'RESERVE_INVENTORY', 'Simulated reservation; undone by ReleaseInventoryHandler.', []],
-    ['ChargePaymentHandler', 'CHARGE_PAYMENT', 'Declines (permanent) above 10000; logs the idempotency key; undone by RefundPaymentHandler.', []],
+    ['ChargePaymentHandler', 'CHARGE_PAYMENT', 'Charges through the PaymentGateway with the step execution id as Idempotency-Key; a decline is permanent, an unreachable provider retryable. Undone by RefundPaymentHandler.', []],
     ['CreateShipmentHandler', 'CREATE_SHIPMENT', 'Permanent failure for country XX; demo options shipmentFailures (retryable) and shipmentDelayMs.', []],
+    ['CheckFraudHandler', 'CHECK_FRAUD', 'Runs in parallel with the reservation. fraud: true rejects the order; fraudCheckDelayMs slows it.', []],
     ['SendConfirmationHandler', 'SEND_CONFIRMATION', 'Simulated email.', []],
-    ['ReleaseInventoryHandler / RefundPaymentHandler', 'undo steps', 'Compensations. refundFails: true makes the refund fail (COMPENSATION_FAILED demo).', []],
+    ['ReleaseInventoryHandler / RefundPaymentHandler', 'undo steps', 'Compensations. The refund knows which charge to reverse from the command\'s compensatesStepExecutionId. refundFails: true makes it fail (COMPENSATION_FAILED demo).', []],
     ['OrderInput', 'record', 'Reads orderId, customerId and amount from the run input.', []],
+  ]},
+  { module: 'flowforge-worker', pkg: 'payments', text: 'How handlers reach the payment provider.', classes: [
+    ['PaymentGateway', 'interface', 'charge(key, order, amount) and refund(key, chargeKey), answering OK / REJECTED / UNAVAILABLE.', []],
+    ['HttpPaymentGateway', 'class', 'Calls flowforge-payments with an Idempotency-Key header; 402/4xx → permanent, 5xx/timeout → retryable.', []],
+    ['SimulatedPaymentGateway', 'class', 'Same rules in memory, for tests or a worker without the provider.', []],
+  ]},
+  { module: 'flowforge-payments', pkg: '(root)', text: 'A simulated external payment provider with its own ledger.', classes: [
+    ['PaymentLedger', 'component', 'One charge and one refund per idempotency key, decided by unique constraints, so concurrent duplicates cannot both charge.', [
+      ['charge(key, order, amount)', 'insert, or replay the first outcome; a reused key with a different request is refused'],
+      ['refund(key, chargeKey)', 'refund a captured charge once'], ['summary()', 'totals, duplicates absorbed, orders charged twice (always 0)']]],
+    ['PaymentController', 'REST', 'POST /v1/charges, POST /v1/refunds (Idempotency-Key required; Idempotent-Replayed: true on repeats), GET /v1/charges, GET /v1/summary.', []],
   ]},
 ];

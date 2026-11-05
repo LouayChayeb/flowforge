@@ -4,12 +4,14 @@ import {
 } from './knowledge.js';
 
 const WORKFLOW = 'order-processing';
+// Same as docs/examples/order-processing.json: reserve-inventory and check-fraud run in parallel.
 const ORDER_PROCESSING = {
   name: WORKFLOW,
   steps: [
     { name: 'validate-order', type: 'VALIDATE_ORDER', maxAttempts: 1 },
-    { name: 'reserve-inventory', type: 'RESERVE_INVENTORY', compensateWith: 'RELEASE_INVENTORY' },
-    { name: 'charge-payment', type: 'CHARGE_PAYMENT', compensateWith: 'REFUND_PAYMENT', maxAttempts: 5 },
+    { name: 'reserve-inventory', type: 'RESERVE_INVENTORY', compensateWith: 'RELEASE_INVENTORY', dependsOn: ['validate-order'] },
+    { name: 'check-fraud', type: 'CHECK_FRAUD', dependsOn: ['validate-order'] },
+    { name: 'charge-payment', type: 'CHARGE_PAYMENT', compensateWith: 'REFUND_PAYMENT', maxAttempts: 5, dependsOn: ['reserve-inventory', 'check-fraud'] },
     { name: 'create-shipment', type: 'CREATE_SHIPMENT' },
     { name: 'send-confirmation', type: 'SEND_CONFIRMATION' },
   ],
@@ -17,8 +19,11 @@ const ORDER_PROCESSING = {
 
 const SCENARIOS = [
   { id: 'normal', title: 'Normal order', expect: 'COMPLETED',
-    text: 'All five steps succeed, one attempt each. The baseline to compare everything else with.',
+    text: 'All six steps succeed, one attempt each; reserve-inventory and check-fraud run at the same time. The baseline.',
     input: {} },
+  { id: 'fraud', title: 'Fraud detected', expect: 'COMPENSATED',
+    text: 'check-fraud fails while its parallel sibling reserve-inventory succeeds: the engine waits for the sibling, then undoes it.',
+    input: { fraud: true, fraudCheckDelayMs: 1500 } },
   { id: 'flaky', title: 'Flaky carrier', expect: 'COMPLETED',
     text: 'Shipping times out twice (retryable), waits 1 s then 2 s of backoff, and succeeds on attempt 3.',
     input: { shipmentFailures: 2 } },
@@ -144,6 +149,7 @@ function orderInput(extra) {
 
 function scenarioOf(input = {}) {
   if (input.refundFails === true || input.refundFails === 'true') return 'Refund fails too';
+  if (input.fraud === true || input.fraud === 'true') return 'Fraud detected';
   if (+input.shipmentFailures >= 3) return 'Carrier down';
   if (+input.shipmentFailures > 0) return 'Flaky carrier';
   if (+input.shipmentDelayMs > 0) return 'Slow shipment';
@@ -154,12 +160,17 @@ function scenarioOf(input = {}) {
 }
 
 async function ensureWorkflow() {
+  let latest = null;
   try {
-    await api(`/api/workflows/${WORKFLOW}`);
+    latest = await api(`/api/workflows/${WORKFLOW}`);
   } catch (e) {
     if (e.status !== 404) throw e;
-    await api('/api/workflows', { method: 'POST', body: JSON.stringify(ORDER_PROCESSING) });
-    toast('Registered the <b>order-processing</b> workflow (version 1).');
+  }
+  // Register (a new version of) the workflow if it is missing or older than the parallel one.
+  if (!latest || !latest.steps.some((s) => s.name === 'check-fraud')) {
+    const created = await api('/api/workflows', { method: 'POST', body: JSON.stringify(ORDER_PROCESSING) });
+    toast(`Registered <b>order-processing</b> version ${created.version}, with reserve-inventory and check-fraud in parallel.
+      Runs already started keep the version they began with.`, 7000);
   }
 }
 
@@ -283,7 +294,10 @@ function renderRuns() {
   }
   body.innerHTML = state.runs.map((r) => {
     const end = r.completedAt ? ms(r.completedAt) : now();
-    const at = r.currentStep ? `${r.currentStepKind === 'COMPENSATION' ? 'undo ' : ''}${esc(r.currentStep)}` : '<span class="faint">—</span>';
+    const at = r.currentStep
+      ? `${r.currentStepKind === 'COMPENSATION' ? 'undo ' : ''}${esc(r.currentStep)}${r.activeSteps > 1
+        ? ` <span class="small muted" title="steps running in parallel">+${r.activeSteps - 1}</span>` : ''}`
+      : '<span class="faint">—</span>';
     return `<tr class="clickable ${r.runId === state.runId ? 'selected' : ''}" data-run="${r.runId}">
       <td><b>${esc(r.input?.orderId ?? r.runId.slice(0, 8))}</b><div class="small muted">${esc(scenarioOf(r.input))}</div></td>
       <td>${livePill(r.status)}</td>
@@ -308,6 +322,7 @@ async function refreshRun() {
   try {
     const [run, commands] = await Promise.all([api(`/api/runs/${state.runId}`), api(`/api/runs/${state.runId}/commands`)]);
     state.run = run; state.commands = commands;
+    await loadRunPayments(run);
     renderRun();
   } catch (e) {
     if (e.status === 404) { state.runId = null; state.run = null; renderRun(); }
@@ -323,6 +338,13 @@ function renderRun() {
   $('#run-title').textContent = `${input.orderId ?? 'Run'} · ${scenarioOf(input)}`;
   $('#run-status').innerHTML = pill(run.status, `big ${['RUNNING', 'COMPENSATING'].includes(run.status) ? 'pulse' : ''}`);
   $('#run-json').href = `/api/runs/${run.runId}`;
+  const traceLink = $('#run-trace');
+  if (run.traceId && state.config?.traceUrl) {
+    traceLink.hidden = false;
+    traceLink.href = state.config.traceUrl.replace('{traceId}', run.traceId);
+  } else {
+    traceLink.hidden = true;
+  }
   const end = run.completedAt ? ms(run.completedAt) : now();
   $('#run-kv').innerHTML = `
     <dt>Run id</dt><dd class="mono">${esc(run.runId)}</dd>
@@ -331,6 +353,7 @@ function renderRun() {
     <dt>Finished</dt><dd>${run.completedAt ? fmtClock(run.completedAt) : '<span class="muted">not yet</span>'}</dd>
     <dt>Duration</dt><dd>${fmtDur(end - ms(run.createdAt))}</dd>
     <dt>Current step</dt><dd>${run.currentStep ? esc(run.currentStep) : '<span class="muted">none — the run is finished</span>'}</dd>
+    <dt>Payment provider</dt><dd>${runPaymentsText()}</dd>
     <dt>Input</dt><dd><pre>${esc(JSON.stringify(input, null, 2))}</pre></dd>`;
   $('#run-state-text').innerHTML = `<b>${esc(run.status)}</b>: ${esc(RUN_STATES[run.status] || '')}`;
   renderRunStateMachine(run);
@@ -398,12 +421,32 @@ function stepCard(step, run) {
   </div>`;
 }
 
-function renderLanes(run) {
+/** Forward steps grouped by dependency depth: every step in a column can run at the same time. */
+function forwardColumns(run) {
   const forward = run.steps.filter((s) => s.kind !== 'COMPENSATION');
+  const byName = new Map(forward.map((s) => [s.name, s]));
+  const depth = new Map();
+  const depthOf = (s) => {
+    if (!depth.has(s.name)) {
+      const deps = (s.dependsOn ?? []).map((n) => byName.get(n)).filter(Boolean);
+      depth.set(s.name, deps.length ? 1 + Math.max(...deps.map(depthOf)) : 0);
+    }
+    return depth.get(s.name);
+  };
+  const columns = [];
+  forward.forEach((s) => { const d = depthOf(s); (columns[d] ||= []).push(s); });
+  return columns.filter(Boolean);
+}
+
+function renderLanes(run) {
   const comp = run.steps.filter((s) => s.kind === 'COMPENSATION');
-  const lane = (label, steps) => `<div class="lane"><div class="lane-label">${label}</div>
-    ${steps.map((s, i) => (i ? '<div class="arrow">→</div>' : '') + stepCard(s, run)).join('')}</div>`;
-  $('#lanes').innerHTML = lane('forward', forward) + (comp.length ? lane('undo', comp) : '');
+  const columns = forwardColumns(run);
+  const forwardLane = `<div class="lane"><div class="lane-label">forward</div>
+    ${columns.map((col, i) => (i ? '<div class="arrow">→</div>' : '')
+      + `<div style="display:flex;flex-direction:column;gap:8px;justify-content:center">${col.map((s) => stepCard(s, run)).join('')}</div>`).join('')}</div>`;
+  const undoLane = comp.length ? `<div class="lane"><div class="lane-label">undo</div>
+    ${comp.map((s, i) => (i ? '<div class="arrow">→</div>' : '') + stepCard(s, run)).join('')}</div>` : '';
+  $('#lanes').innerHTML = forwardLane + undoLane;
   if (!state.stepId) {
     const pick = run.steps.find((s) => s.status === 'RUNNING' || s.status === 'RETRY_WAIT')
       || [...run.steps].reverse().find((s) => s.attemptCount > 0) || run.steps[0];
@@ -473,8 +516,22 @@ function buildTimeline(run) {
   const events = [];
   const add = (t, kind, title, detail, why, color) => events.push({ t: ms(t), iso: t, kind, title, detail, why, color });
   add(run.createdAt, 'created', 'Run created, first step made eligible', `input: ${scenarioOf(run.input)}`, TIMELINE_WHY.created, 'var(--accent)');
-  let prevFinish = ms(run.createdAt);
   const firstComp = run.steps.find((s) => s.kind === 'COMPENSATION');
+  const forwardByName = new Map(run.steps.filter((s) => s.kind !== 'COMPENSATION').map((s) => [s.name, s]));
+  const succeededAt = (s) => ms(s?.attempts.find((x) => x.status === 'SUCCEEDED')?.finishedAt);
+  // When this attempt became claimable: its dependencies' successes, the previous attempt, or the previous undo step.
+  const readyAt = (step, a) => {
+    if (a.attempt > 1) return ms(step.attempts.find((p) => p.attempt === a.attempt - 1)?.finishedAt);
+    const index = run.steps.indexOf(step);
+    if (step.kind === 'COMPENSATION') {
+      const prev = run.steps[index - 1];
+      if (prev?.kind === 'COMPENSATION') return succeededAt(prev);
+      return Math.max(...run.steps.filter((s) => s.kind !== 'COMPENSATION')
+        .flatMap((s) => s.attempts.map((x) => ms(x.finishedAt) || 0)));
+    }
+    const deps = (step.dependsOn ?? []).map((n) => forwardByName.get(n));
+    return deps.length ? Math.max(...deps.map(succeededAt)) : ms(run.createdAt);
+  };
   const steps = [...run.steps].sort((a, b) => {
     const at = a.attempts[0]?.startedAt; const bt = b.attempts[0]?.startedAt;
     return (at ? ms(at) : Infinity) - (bt ? ms(bt) : Infinity);
@@ -493,12 +550,12 @@ function buildTimeline(run) {
     }
     for (const a of step.attempts) {
       const cmd = state.commands.find((c) => c.stepExecutionId === step.stepExecutionId && c.attempt === a.attempt);
-      const waited = ms(a.startedAt) - prevFinish;
+      const waited = ms(a.startedAt) - readyAt(step, a);
       const previous = step.attempts.find((p) => p.attempt === a.attempt - 1);
       const backoff = previous && ['RETRYABLE_FAILURE', 'TIMED_OUT'].includes(previous.status) ? retryBackoff(previous.attempt) : null;
       const waitText = backoff != null
         ? `waited ${fmtDur(waited)}: ${fmtDur(backoff)} retry backoff after attempt ${previous.attempt}, then the next dispatch tick`
-        : `ready → claimed in ${fmtDur(waited)} (the dispatcher polls every ${state.config?.dispatchIntervalMs ?? '?'} ms)`;
+        : `ready → claimed in ${fmtDur(waited)}${state.config?.wakeup === false ? ` (the dispatcher polls every ${state.config?.dispatchIntervalMs ?? '?'} ms)` : ''}`;
       add(a.startedAt, 'claimed', `Claimed ${label} — attempt ${a.attempt} of ${step.maxAttempts}`,
         `${waitText}${cmd?.deadline ? ` · lease until ${fmtClock(cmd.deadline)}` : ''}`,
         TIMELINE_WHY.claimed.replace('{attempt}', a.attempt), 'var(--s-running)');
@@ -521,7 +578,6 @@ function buildTimeline(run) {
         const sincePublish = cmd?.publishedAt ? ` · worker + Kafka round trip ${fmtDur(ms(a.finishedAt) - ms(cmd.publishedAt))}` : '';
         add(a.finishedAt, kind, titles[kind], `${a.errorMessage ? `“${a.errorMessage}”` : 'result applied'}${sincePublish}`,
           TIMELINE_WHY[kind], RUN_STATUS_COLOR[a.status]);
-        prevFinish = ms(a.finishedAt);
       } else {
         add(new Date(now()).toISOString(), 'inflight', `${label} attempt ${a.attempt} is with a worker`, 'waiting for its result…', TIMELINE_WHY.inflight, 'var(--s-running)');
       }
@@ -621,7 +677,8 @@ function renderConfig() {
   const init = parseIsoDuration(c.initialBackoff); const max = parseIsoDuration(c.maxBackoff);
   const schedule = [1, 2, 3, 4, 5].map((n) => fmtDur(Math.min(init * c.backoffMultiplier ** (n - 1), max))).join(', ');
   const items = [
-    ['Dispatch interval', `${c.dispatchIntervalMs} ms`, 'How often each orchestrator looks for ready steps. Most of a step\'s waiting time at low load — shorter means lower latency but more, smaller transactions.'],
+    ['Instant dispatch (wake-up)', c.wakeup ? 'on' : 'off', 'Claim a step the moment it becomes ready (after the transaction that made it ready commits), and send its command as soon as it is claimed, instead of waiting for the next tick. EngineWakeup.'],
+    ['Dispatch interval', `${c.dispatchIntervalMs} ms`, c.wakeup ? 'The safety-net poll: catches anything a wake-up missed, e.g. after a crash between commit and wake-up.' : 'How often each orchestrator looks for ready steps — most of a step\'s waiting time at low load.'],
     ['Outbox interval', `${c.outboxIntervalMs} ms`, 'How often pending commands are sent to Kafka.'],
     ['Recovery interval', `${c.recoveryIntervalMs} ms`, 'How often expired leases are looked for.'],
     ['Batch size', c.batchSize, 'Steps claimed (and outbox rows sent) per transaction.'],
@@ -633,6 +690,49 @@ function renderConfig() {
   ];
   $('#config').innerHTML = items.map(([k, v, text]) => `<div class="config-item"><div class="row"><span class="k">${k}</span><span class="spacer"></span><span class="v">${esc(v)}</span></div>
     <div class="small muted">${text}</div></div>`).join('');
+}
+
+// ---------------------------------------------------------------- payments
+function renderPayments() {
+  const p = state.payments;
+  const box = $('#payments');
+  if (!p) { box.innerHTML = '<p class="small muted">Loading…</p>'; return; }
+  if (!p.configured) {
+    box.innerHTML = `<p class="small muted">Not connected: start <code>flowforge-payments</code> and give the orchestrator
+      <code>--flowforge.insight.payments-url=http://localhost:8084</code> (and the workers <code>--flowforge.worker.payments-url=…</code>).
+      Without it, workers simulate payments in memory.</p>`;
+    return;
+  }
+  if (!p.reachable) { box.innerHTML = `<p class="small" style="color:var(--s-failed)">Provider at ${esc(p.url)} unreachable: ${esc(p.error)}</p>`; return; }
+  const s = p.summary;
+  const stats = [
+    ['Charges', s.charges, ''], ['Captured', s.captured, ''], ['Declined', s.declined, ''], ['Refunded', s.refunded, ''],
+    ['Duplicates absorbed', s.duplicateRequestsAbsorbed, 'requests that repeated a key and changed nothing'],
+    ['Orders charged twice', s.ordersChargedMoreThanOnce, 'must be 0'],
+  ];
+  box.innerHTML = `<div class="stat-grid">${stats.map(([label, v, note]) => `<div class="stat" title="${esc(note)}">
+      <div class="label">${label}</div><div class="value" style="${label === 'Orders charged twice' ? `color:${v ? 'var(--s-failed)' : 'var(--s-completed)'}` : ''}">${v}</div></div>`).join('')}</div>
+    <p class="small muted" style="margin-top:8px">Captured total ${esc(s.capturedAmount)} · provider at <code>${esc(p.url)}</code></p>`;
+}
+async function pollPayments() {
+  try { state.payments = await api('/api/admin/payments'); } catch { state.payments = null; }
+  if (state.view === 'engine') renderPayments();
+}
+async function loadRunPayments(run) {
+  const orderId = run.input?.orderId;
+  if (!orderId) { state.runPayments = null; return; }
+  try { state.runPayments = await api(`/api/admin/payments?orderId=${encodeURIComponent(orderId)}`); } catch { state.runPayments = null; }
+}
+function runPaymentsText() {
+  const p = state.runPayments;
+  if (!p) return '<span class="muted">—</span>';
+  if (!p.configured) return '<span class="muted">simulated in the worker (provider not connected)</span>';
+  if (!p.reachable) return '<span class="muted">provider unreachable</span>';
+  const charges = p.charges || [];
+  if (!charges.length) return '<span class="muted">no charge for this order</span>';
+  return charges.map((c) => `${pill(c.status)} ${esc(c.amount)} · ${c.requests} request${c.requests === 1 ? '' : 's'}${c.requests > 1
+    ? ` <span style="color:var(--s-completed)">(${c.requests - 1} duplicate${c.requests > 2 ? 's' : ''} absorbed — charged once)</span>` : ''}
+    <div class="small faint mono">key ${esc(c.idempotencyKey)}</div>`).join('');
 }
 
 // ---------------------------------------------------------------- kafka view
@@ -759,7 +859,7 @@ function showView(view) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === view));
   if (view === 'run') refreshRun();
   if (view === 'kafka') { renderKafka(); renderCrashGuide(); }
-  if (view === 'engine') { renderEngine(); renderInvariants(); renderConfig(); }
+  if (view === 'engine') { renderEngine(); renderInvariants(); renderConfig(); renderPayments(); }
 }
 
 function setConnected(ok, text) {
@@ -874,7 +974,8 @@ renderDiagram();
 renderComponent('dispatcher');
 renderLearn();
 wire();
-pollStats(); pollKafka(); pollConsistency();
+pollStats(); pollKafka(); pollConsistency(); pollPayments();
 setInterval(pollStats, 1000);
+setInterval(pollPayments, 3000);
 setInterval(pollKafka, 2000);
 setInterval(pollConsistency, 5000);

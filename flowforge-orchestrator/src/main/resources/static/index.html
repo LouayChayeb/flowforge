@@ -108,6 +108,7 @@
           <h2 id="run-title">Run</h2>
           <span id="run-status"></span>
           <span class="spacer"></span>
+          <a class="small" id="run-trace" target="_blank" hidden title="The run as one distributed trace: every claim, Kafka hop, worker and payment call">open trace ↗</a>
           <a class="small" id="run-json" target="_blank">raw JSON</a>
         </div>
         <div class="panel-body grid two">
@@ -179,6 +180,17 @@
               snapshot, and lists any rows that break it. It checks <b>the history itself</b>, so it would catch a bug
               however it happened — the stress tests run it after chaos. Re-checked every 5 s.</p>
             <div id="invariants"></div>
+          </div>
+        </div>
+        <div class="panel" id="tour-payments">
+          <div class="panel-head"><h2>Payment provider</h2><span class="hint">what the outside world saw</span></div>
+          <div class="panel-body">
+            <p class="explain">A step can run more than once (a worker dies after charging, before reporting), so
+              exactly-once can only come from the other side: the <b>simulated provider</b> (<code>flowforge-payments</code>)
+              remembers every <code>Idempotency-Key</code> — FlowForge sends the step execution id — and answers a
+              repeat with the original charge instead of charging again. <b>Duplicates absorbed</b> counts those
+              repeats; <b>orders charged twice</b> must stay 0.</p>
+            <div id="payments"></div>
           </div>
         </div>
         <div class="panel">

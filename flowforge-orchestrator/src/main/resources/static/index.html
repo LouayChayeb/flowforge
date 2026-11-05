@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FlowForge</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b5bdb'/%3E%3Ctext x='16' y='22' font-family='Arial' font-weight='800' font-size='17' fill='white' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/dashboard.css">
+</head>
+<body class="guide">
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">F</div>
+    <div>
+      <div class="brand-name">FlowForge</div>
+      <div class="brand-sub">durable workflow engine · live</div>
+    </div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="live">Live</button>
+    <button class="tab" data-view="run">Run detail</button>
+    <button class="tab" data-view="engine">Engine</button>
+    <button class="tab" data-view="kafka">Kafka</button>
+    <button class="tab" data-view="learn">Learn</button>
+  </nav>
+  <div class="topbar-right">
+    <label class="switch" title="Show the explanation boxes everywhere"><input type="checkbox" id="guide-toggle" checked> Guide mode</label>
+    <button class="btn" id="tour-btn">Take the tour</button>
+    <button class="btn ghost" id="theme-btn" title="Toggle light / dark">◐</button>
+    <span class="conn"><span class="dot" id="conn-dot"></span><span id="conn-text">connecting…</span></span>
+  </div>
+</header>
+
+<main>
+  <!-- ================= LIVE ================= -->
+  <section class="view active" id="view-live">
+    <div class="grid live">
+      <div class="stack">
+        <div class="panel" id="tour-scenarios">
+          <div class="panel-head"><h2>Start an order</h2></div>
+          <div class="panel-body">
+            <p class="explain">Each button sends <code>POST /api/workflows/order-processing/runs</code> with a
+              different input. The API only <b>records</b> the run and answers <code>202 Accepted</code>; the work
+              happens afterwards, in the background. Pick one and watch it move through the diagram.</p>
+            <div class="scenarios" id="scenarios"></div>
+            <details style="margin-top:12px">
+              <summary class="small" style="cursor:pointer">Custom input…</summary>
+              <textarea id="custom-input" spellcheck="false"></textarea>
+              <div class="row" style="margin-top:6px">
+                <button class="btn primary" id="custom-send">Send</button>
+                <span class="small muted">Fields the demo handlers read: <code>orderId</code>, <code>customerId</code>,
+                  <code>amount</code>, <code>country</code>, <code>shipmentFailures</code>, <code>shipmentDelayMs</code>,
+                  <code>refundFails</code></span>
+              </div>
+            </details>
+            <div class="row" style="margin-top:12px">
+              <button class="btn" id="burst-btn" title="20 orders with a realistic mix">Send 20 mixed orders</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="panel" id="tour-diagram">
+          <div class="panel-head">
+            <h2>How a step travels</h2>
+            <span class="hint">Click any box to see what it does and which code does it. Numbers are per second, live.</span>
+          </div>
+          <div class="panel-body">
+            <p class="explain">Every step of every order goes round this loop once per attempt:
+              <b>claimed</b> from PostgreSQL → written to the <b>outbox</b> in the same transaction → <b>published</b>
+              to Kafka → <b>executed</b> by a worker → <b>result</b> back through Kafka → <b>applied</b> to the database,
+              which makes the next step ready. The database is the single source of truth; Kafka only moves messages.</p>
+            <svg class="diagram" id="diagram" viewBox="0 0 1000 430" role="img" aria-label="Architecture diagram"></svg>
+          </div>
+          <div class="drawer" id="component-drawer"></div>
+        </div>
+
+        <div class="panel" id="tour-runs">
+          <div class="panel-head">
+            <h2>Recent runs</h2>
+            <span class="hint">Click a run to open it.</span>
+            <span class="spacer"></span>
+            <select id="run-filter">
+              <option value="">All statuses</option>
+              <option>RUNNING</option><option>COMPENSATING</option><option>COMPLETED</option>
+              <option>COMPENSATED</option><option>FAILED</option><option>COMPENSATION_FAILED</option>
+            </select>
+          </div>
+          <div class="panel-body flush table-wrap">
+            <table>
+              <thead><tr><th>Order</th><th>Status</th><th>Now at</th><th>Attempts</th><th>Duration</th><th>Started</th></tr></thead>
+              <tbody id="runs-body"><tr><td colspan="6" class="empty">No runs yet. Start an order on the left.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= RUN DETAIL ================= -->
+  <section class="view" id="view-run">
+    <div id="run-empty" class="panel"><div class="empty">Open a run from the <a href="#" data-goto="live">Live</a> tab, or start an order.</div></div>
+    <div id="run-detail" class="stack" hidden>
+      <div class="panel" id="tour-run-head">
+        <div class="panel-head">
+          <h2 id="run-title">Run</h2>
+          <span id="run-status"></span>
+          <span class="spacer"></span>
+          <a class="small" id="run-json" target="_blank">raw JSON</a>
+        </div>
+        <div class="panel-body grid two">
+          <dl class="kv" id="run-kv"></dl>
+          <div>
+            <h4>Run state machine</h4>
+            <svg class="statemachine" id="run-sm" viewBox="0 0 520 170"></svg>
+            <p class="small muted" id="run-state-text"></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="tour-pipeline">
+        <div class="panel-head"><h2>Steps</h2><span class="hint">Click a step for its attempts and state machine. Dots are attempts.</span></div>
+        <div class="panel-body">
+          <p class="explain">Steps run <b>one at a time, in order</b>: only the run's current step is ever eligible.
+            When a step fails for good, FlowForge walks back over the steps that already succeeded and appends a
+            <b>compensation</b> (undo) step for each one that declared it, most recent first — that is the lower lane.</p>
+          <div class="lanes" id="lanes"></div>
+        </div>
+        <div class="drawer" id="step-drawer" hidden></div>
+      </div>
+
+      <div class="panel" id="tour-timeline">
+        <div class="panel-head">
+          <h2>What happened, in order</h2>
+          <span class="hint">Rebuilt from the stored attempts and outbox rows. Expand an event to see the code behind it.</span>
+        </div>
+        <div class="panel-body"><ol class="timeline" id="timeline"></ol></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ENGINE ================= -->
+  <section class="view" id="view-engine">
+    <div class="grid two">
+      <div class="stack">
+        <div class="panel">
+          <div class="panel-head"><h2>Counters</h2><span class="hint" id="counter-instance"></span></div>
+          <div class="panel-body">
+            <p class="explain">Micrometer counters kept by <code>EngineMetrics</code>, also at
+              <code>/actuator/metrics/flowforge.*</code>. They belong to <b>this orchestrator instance</b> and restart at
+              zero with it; with two orchestrators each counts its own share.</p>
+            <div class="stat-grid" id="counters"></div>
+          </div>
+        </div>
+        <div class="panel" id="tour-leases">
+          <div class="panel-head"><h2>Leases and retries right now</h2></div>
+          <div class="panel-body">
+            <p class="explain">A claimed step holds a <b>lease</b>: if no result arrives before it expires, the recovery
+              sweeper times the attempt out and retries it. A failed step waits in <code>RETRY_WAIT</code> until its
+              backoff is over. Start <i>Slow shipment</i> or <i>Flaky carrier</i> to see these fill up.</p>
+            <h4>Running (lease countdown)</h4>
+            <div id="leases"></div>
+            <h4 style="margin-top:12px">Waiting (eligible at)</h4>
+            <div id="waiting"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>What the database holds</h2></div>
+          <div class="panel-body" id="db-stats"></div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <div class="panel-head"><h2>Correctness: the 10 invariants</h2><span class="spacer"></span><span id="consistency-badge"></span></div>
+          <div class="panel-body">
+            <p class="explain"><code>ConsistencyChecker</code> runs one SQL query per rule, all in one repeatable-read
+              snapshot, and lists any rows that break it. It checks <b>the history itself</b>, so it would catch a bug
+              however it happened — the stress tests run it after chaos. Re-checked every 5 s.</p>
+            <div id="invariants"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Configuration of this instance</h2></div>
+          <div class="panel-body"><div class="config-list" id="config"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= KAFKA ================= -->
+  <section class="view" id="view-kafka">
+    <div class="stack">
+      <div class="panel">
+        <div class="panel-body">
+          <p class="explain" style="display:block">Kafka keeps each topic as numbered <b>partitions</b>. Every message of
+            a run has the run id as its key, so it always lands on the same partition and is read in order. A
+            <b>consumer group</b> splits the partitions among its members; each member remembers how far it got (its
+            committed <b>offset</b>), and <b>lag</b> = messages not yet processed. When a member dies, Kafka notices
+            after the session timeout (10 s) and hands its partitions to the others — uncommitted messages are
+            delivered again, which is why every step must be safe to run twice.</p>
+          <div id="kafka-error"></div>
+        </div>
+      </div>
+      <div class="grid two" id="kafka-groups"></div>
+      <div class="panel" id="tour-crash">
+        <div class="panel-head"><h2>Try it: kill a worker</h2></div>
+        <div class="panel-body" id="crash-guide"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= LEARN ================= -->
+  <section class="view" id="view-learn">
+    <div class="stack">
+      <div class="panel">
+        <div class="panel-head"><h2>The life of one order, step by step</h2></div>
+        <div class="panel-body"><ol class="journey" id="journey"></ol></div>
+      </div>
+      <div class="grid two">
+        <div class="panel">
+          <div class="panel-head"><h2>What can go wrong, and what handles it</h2></div>
+          <div class="panel-body flush table-wrap"><table><thead><tr><th>Failure</th><th>Mechanism</th><th>Try it</th></tr></thead><tbody id="failures"></tbody></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Guarantees</h2></div>
+          <div class="panel-body" id="guarantees"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Code map: every class</h2>
+          <span class="hint">What each class is for and what its methods do.</span>
+          <span class="spacer"></span>
+          <input type="search" id="code-search" placeholder="Filter, e.g. lease, outbox, claim">
+        </div>
+        <div class="panel-body" id="code-map"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Glossary</h2></div>
+        <div class="panel-body"><div class="glossary" id="glossary"></div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="assets/dashboard.js"></script>
+</body>
+</html>

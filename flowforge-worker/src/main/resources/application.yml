@@ -28,8 +28,12 @@ spring:
       properties:
         enable.idempotence: true
         spring.json.add.type.headers: false
+    template:
+      # Propagate the trace context in Kafka headers (W3C traceparent).
+      observation-enabled: true
     listener:
       ack-mode: record
+      observation-enabled: true
       concurrency: 3
 
 server:
@@ -41,8 +45,24 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       probes:
         enabled: true
+  metrics:
+    tags:
+      # Lets one Prometheus tell orchestrator, worker and payment provider apart.
+      application: ${spring.application.name}
+  tracing:
+    # Off unless a collector is there to receive spans (docker compose and the Helm chart switch it on).
+    enabled: ${FLOWFORGE_TRACING_ENABLED:false}
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${FLOWFORGE_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+  observations:
+    enable:
+      # The engine loops tick every few hundred milliseconds; tracing each tick would bury the traces that matter.
+      tasks.scheduled: false

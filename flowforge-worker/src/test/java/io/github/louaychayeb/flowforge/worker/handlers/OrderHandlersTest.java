@@ -3,8 +3,10 @@ package io.github.louaychayeb.flowforge.worker.handlers;
 import io.github.louaychayeb.flowforge.common.messaging.StepOutcome;
 import io.github.louaychayeb.flowforge.common.step.StepContext;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
+import io.github.louaychayeb.flowforge.worker.payments.SimulatedPaymentGateway;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -12,6 +14,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class OrderHandlersTest {
+
+    private final SimulatedPaymentGateway payments = new SimulatedPaymentGateway(new BigDecimal("10000"));
 
     private static final Map<String, Object> VALID_ORDER = Map.of(
             "orderId", "ORD-1042", "customerId", "CUS-91", "amount", 249.90);
@@ -47,9 +51,9 @@ class OrderHandlersTest {
         Map<String, Object> large = new HashMap<>(VALID_ORDER);
         large.put("amount", 10_000.01);
 
-        assertThat(new ChargePaymentHandler().execute(context(VALID_ORDER)).outcome())
+        assertThat(new ChargePaymentHandler(payments).execute(context(VALID_ORDER)).outcome())
                 .isEqualTo(StepOutcome.SUCCEEDED);
-        assertThat(new ChargePaymentHandler().execute(context(large)).outcome())
+        assertThat(new ChargePaymentHandler(payments).execute(context(large)).outcome())
                 .isEqualTo(StepOutcome.PERMANENT_FAILURE);
     }
 
@@ -68,7 +72,7 @@ class OrderHandlersTest {
     void compensationsSucceed() {
         assertThat(new ReleaseInventoryHandler().execute(context(VALID_ORDER)).outcome())
                 .isEqualTo(StepOutcome.SUCCEEDED);
-        assertThat(new RefundPaymentHandler().execute(context(VALID_ORDER)).outcome())
+        assertThat(new RefundPaymentHandler(payments).execute(undo(VALID_ORDER)).outcome())
                 .isEqualTo(StepOutcome.SUCCEEDED);
     }
 
@@ -90,8 +94,40 @@ class OrderHandlersTest {
         Map<String, Object> stuck = new HashMap<>(VALID_ORDER);
         stuck.put("refundFails", true);
 
-        assertThat(new RefundPaymentHandler().execute(context(stuck)).outcome())
+        assertThat(new RefundPaymentHandler(payments).execute(context(stuck)).outcome())
                 .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+    }
+
+    @Test
+    void aChargeThatRunsTwiceChargesOnce() {
+        ChargePaymentHandler charge = new ChargePaymentHandler(payments);
+        StepContext sameStep = context(VALID_ORDER);
+
+        assertThat(charge.execute(sameStep).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
+        // Redelivered after a crash: same step execution id, so the same idempotency key.
+        assertThat(charge.execute(sameStep).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(payments.charge(sameStep.stepExecutionId().toString(), "ORD-1042", new BigDecimal("249.90")).replayed())
+                .as("the provider has seen this key before").isTrue();
+    }
+
+    @Test
+    void aRefundWithoutAChargeReferenceFailsPermanently() {
+        assertThat(new RefundPaymentHandler(payments).execute(context(VALID_ORDER)).outcome())
+                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+    }
+
+    @Test
+    void theFraudCheckRejectsFlaggedOrders() {
+        Map<String, Object> flagged = new HashMap<>(VALID_ORDER);
+        flagged.put("fraud", true);
+
+        assertThat(new CheckFraudHandler().execute(context(VALID_ORDER)).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(new CheckFraudHandler().execute(context(flagged)).outcome())
+                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+    }
+
+    private static StepContext undo(Map<String, Object> input) {
+        return new StepContext(UUID.randomUUID(), UUID.randomUUID(), "undo", 1, input, UUID.randomUUID());
     }
 
     private static StepContext context(Map<String, Object> input) {

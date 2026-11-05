@@ -65,7 +65,8 @@ public class StepCommandProcessor {
             return StepHandlerResult.permanentFailure("No handler registered for step type " + command.stepType());
         }
         StepContext context = new StepContext(command.runId(), command.stepExecutionId(), command.stepName(),
-                command.attempt(), command.input() == null ? Map.of() : command.input());
+                command.attempt(), command.input() == null ? Map.of() : command.input(),
+                command.compensatesStepExecutionId());
         try {
             StepHandlerResult result = handler.execute(context);
             return result != null ? result : StepHandlerResult.retryableFailure("Handler returned no result");

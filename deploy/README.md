@@ -44,6 +44,25 @@ Then use the API on `localhost:8085` as in the [README](../README.md).
 
 To deploy a rebuilt image, give it a new tag and `helm upgrade --set image.tag=<tag>`: `minikube image load` does not replace an image that already exists under the same tag.
 
+## Payment provider
+
+The chart deploys the simulated payment provider (`flowforge-payments`, `payments.enabled`, on by default) and points every worker at it, so charges and refunds go over HTTP with an `Idempotency-Key`. With `payments.enabled=false` workers simulate payments in memory instead. Its image is built like the others:
+
+```bash
+docker build --build-arg MODULE=flowforge-payments -t flowforge-payments:0.1.0 .
+minikube image load flowforge-payments:0.1.0
+```
+
+## Traces and metrics
+
+```bash
+helm upgrade --install flowforge deploy/helm/flowforge -n flowforge --set observability.enabled=true --wait
+kubectl port-forward -n flowforge svc/flowforge-grafana 3000:3000
+kubectl port-forward -n flowforge svc/flowforge-jaeger 16686:16686
+```
+
+`observability.enabled` adds Jaeger (all-in-one, in-memory), Prometheus and Grafana, and switches tracing on in every service. Prometheus finds every orchestrator, worker and provider pod through headless services, so scaling needs no change. Grafana opens on the FlowForge dashboard (throughput, run and attempt latency percentiles, work in progress, failure handling, consumer lag, payment requests, CPU); the dashboard's "open trace" links go to the port-forwarded Jaeger UI. These are demo-grade: no persistence and anonymous Grafana access — not for a shared cluster.
+
 ## Load testing
 
 [`loadtest/LoadTest.java`](../loadtest/LoadTest.java) is a dependency-free, open-model load generator (it submits at a fixed rate regardless of response times). [`loadtest/run-k8s.ps1`](../loadtest/run-k8s.ps1) wraps it: port-forward, warm-up, measure.

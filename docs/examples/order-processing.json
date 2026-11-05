@@ -2,8 +2,12 @@
   "name": "order-processing",
   "steps": [
     { "name": "validate-order",    "type": "VALIDATE_ORDER",    "maxAttempts": 1 },
-    { "name": "reserve-inventory", "type": "RESERVE_INVENTORY", "compensateWith": "RELEASE_INVENTORY" },
-    { "name": "charge-payment",    "type": "CHARGE_PAYMENT",    "compensateWith": "REFUND_PAYMENT", "maxAttempts": 5 },
+    { "name": "reserve-inventory", "type": "RESERVE_INVENTORY", "compensateWith": "RELEASE_INVENTORY",
+      "dependsOn": ["validate-order"] },
+    { "name": "check-fraud",       "type": "CHECK_FRAUD",
+      "dependsOn": ["validate-order"] },
+    { "name": "charge-payment",    "type": "CHARGE_PAYMENT",    "compensateWith": "REFUND_PAYMENT", "maxAttempts": 5,
+      "dependsOn": ["reserve-inventory", "check-fraud"] },
     { "name": "create-shipment",   "type": "CREATE_SHIPMENT" },
     { "name": "send-confirmation", "type": "SEND_CONFIRMATION" }
   ]

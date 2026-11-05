@@ -13,8 +13,8 @@ FlowForge answers it in three parts: **invariants** that define "correct", a **c
 | `attempt-history-complete` | Every step's attempts are numbered 1..attemptCount, no gaps, no extras |
 | `single-open-attempt` | Only a `RUNNING` step has an open attempt, and it is its latest |
 | `exactly-one-success` | A `COMPLETED` step has exactly one successful attempt, its last; any other step has none |
-| `no-step-ahead-of-run` | No step beyond the run's current position was attempted or made eligible |
-| `sequential-in-time` | Each step's first attempt started only after the previous step succeeded |
+| `dependencies-respected` | No step was attempted or made eligible before every step it depends on completed, and no compensation ran ahead of its turn |
+| `ordered-in-time` | Each step's first attempt started only after its dependencies succeeded; a compensation's only after every forward attempt and the previous compensation finished |
 | `completed-run-is-complete` | A `COMPLETED` run has every step completed and nothing compensated |
 | `finished-run-is-quiet` | A finished run has nothing running, retrying or eligible |
 | `compensation-targets` | Each compensation undoes a distinct completed step that declared that compensation |
@@ -50,7 +50,7 @@ Recording a result and expiring a lease both lock the step first, so for any att
 
 [`ConcurrencyStressTest`](../flowforge-orchestrator/src/test/java/io/github/louaychayeb/flowforge/orchestrator/engine/ConcurrencyStressTest.java) runs against real PostgreSQL and Kafka:
 
-- 40 runs of a 4-step workflow; every fourth run is flagged to fail at the end and must be compensated
+- 40 runs of a 4-step **diamond** workflow — `reserve`, then `flaky` and `charge` in parallel, then `finish` — so parallel branches race each other as well as the chaos; every fourth run is flagged to fail at the end and must be compensated
 - 3 concurrent "orchestrator instances", each running the dispatch, outbox and recovery loops
 - 3 worker consumers that report late 25% of the time (up to 2 s) and report twice 20% of the time
 - a 1.5 s lease, so late reports regularly lose the race against lease expiry
@@ -75,6 +75,14 @@ Writing these tests changed the code twice, and later the test once.
 **2. Overload turned into a retry storm.** With 40 runs started at once and deliberately slow workers, commands queued for longer than the lease. Attempts timed out and were retried, and workers kept executing the timed-out commands anyway. Wasted work grew the queue, which caused more timeouts, until runs ran out of attempts. No invariant was broken — every run ended in a consistent, explainable state — but nearly every run ended *wrong*. The fix is load shedding: each `StepCommand` now carries its lease deadline, and workers skip commands that arrive after it. Skipped commands cost nothing, so a backlog drains instead of growing. In the run above, 404 of 616 attempts timed out during the initial burst, and every run still finished correctly.
 
 **3. The test itself retried without backoff.** In Phase 5 the stress test turned out to fail about one run in three, with every invariant intact but some runs `FAILED` after exhausting their attempts. The integration tests retry immediately for speed, so here each burst of timed-out attempts was re-dispatched as an identical burst behind the same 1.5 s lease, and timed out again. That is exactly what exponential backoff exists to prevent, and production defaults to it (1 s, doubling); the stress test now uses 250 ms doubling to 2 s, and passed 5 runs out of 5.
+
+## Parallel steps
+
+When steps may run in parallel, two of a run's steps can finish at the same moment — one result and another's lease expiry, or two results on different listener threads. Applying an outcome therefore locks the run row as well as the step row (step first, then run, everywhere, so the two locks cannot deadlock). Run-level decisions — which steps become eligible, whether anything is still in flight before compensating — are thus made one at a time, each seeing the others' effects. [`ParallelRunTest`](../flowforge-orchestrator/src/test/java/io/github/louaychayeb/flowforge/orchestrator/run/ParallelRunTest.java) covers the rules (joins wait for every branch; a failure waits for siblings still in flight, then undoes what completed, most recent first) and [`ParallelExecutionTest`](../flowforge-orchestrator/src/test/java/io/github/louaychayeb/flowforge/orchestrator/engine/ParallelExecutionTest.java) runs them end to end, checking the invariants afterwards.
+
+## Exactly-once effects at the payment provider
+
+The engine guarantees exactly-once *state changes*; a handler's side effect can still happen twice. The simulated provider closes that gap the way real ones do: each charge and refund is stored under its idempotency key with a unique constraint, so of two concurrent requests with the same key one inserts and the other finds the row and replays its result. [`PaymentsApiTest`](../flowforge-payments/src/test/java/io/github/louaychayeb/flowforge/payments/PaymentsApiTest.java) sends 16 concurrent charges with one key and requires exactly one to have charged; a key reused for a different amount is refused (422), as Stripe does.
 
 ## Live run
 

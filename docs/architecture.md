@@ -13,7 +13,7 @@ This document describes the design. Sections are marked with the roadmap phase i
 
 | Entity | Responsibility |
 |---|---|
-| `WorkflowDefinition` | Named, versioned list of steps and their order |
+| `WorkflowDefinition` | Named, versioned list of steps; each step lists the earlier steps it depends on (`depends_on`, default: the previous step) |
 | `WorkflowRun` | One execution of a definition with its input and overall status |
 | `StepExecution` | State of one logical step within a run; stable id across retries. `kind` is `FORWARD` or `COMPENSATION`; while `RUNNING` it holds a lease (`lease_expires_at`) |
 | `StepAttempt` | One execution attempt of a step: start/end time, outcome (`SUCCEEDED`, `RETRYABLE_FAILURE`, `PERMANENT_FAILURE`, `TIMED_OUT`), error |
@@ -37,7 +37,7 @@ stateDiagram-v2
     COMPENSATION_FAILED --> [*]
 ```
 
-When a forward step fails terminally, the run walks back over the steps before it and, for each `COMPLETED` step with a `compensation_type`, appends a `COMPENSATION` step execution — most recent first. Those run sequentially through the same claim, outbox, lease and retry machinery as forward steps, with the forward step's attempt budget. `COMPENSATION_FAILED` means the system can no longer restore consistency on its own and a human has to look.
+When a forward step fails terminally, no new forward step starts, and steps already in flight (running, backing off, or eligible) are allowed to finish: in a parallel workflow a sibling may still succeed and then need undoing too. Once none is in flight, the run takes every `COMPLETED` step with a `compensation_type`, most recently completed first, and appends a `COMPENSATION` step execution for each. Those run sequentially through the same claim, outbox, lease and retry machinery as forward steps, with the forward step's attempt budget. `COMPENSATION_FAILED` means the system can no longer restore consistency on its own and a human has to look.
 
 ## Step state machine (Phase 1)
 
@@ -57,7 +57,9 @@ Every transition is validated. A terminal state (`COMPLETED`, `FAILED`) can neve
 
 ## Execution loops (Phase 3)
 
-A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attempt_at <= now`. Only the run's current step ever has a `next_attempt_at`, which is what keeps execution sequential. Three scheduled loops drive the engine; each locks its rows with `SKIP LOCKED`, so several orchestrator instances can run them concurrently.
+A step is claimable when its status is `PENDING` or `RETRY_WAIT` and `next_attempt_at <= now`. A forward step gets a `next_attempt_at` only when every step in its `depends_on` has completed — so a step that depends on the previous one runs sequentially, and independent steps run in parallel — and a compensation step only when the one before it has. Applying an outcome locks the step row and then the run row, so outcomes of parallel steps of one run are applied one at a time and every decision about what becomes eligible sees the others.
+
+Three loops drive the engine. Each normally runs the moment it has work: `EngineWakeup` listens for events published inside the engine's transactions and, **after the commit**, runs the dispatcher (a step became ready) or the publisher (commands were written), waiting `wakeup-linger` (20 ms) so work that appears close together shares a batch. A retry backoff schedules a wake-up for when it ends. The intervals below are the safety net that catches anything a wake-up missed — for example a crash between commit and wake-up. Each loop locks its rows with `SKIP LOCKED`, so several orchestrator instances can run them concurrently; each locks its rows with `SKIP LOCKED`, so several orchestrator instances can run them concurrently.
 
 | Loop | Interval (`flowforge.engine.scheduler.*`) | Transaction |
 |---|---|---|
@@ -112,5 +114,10 @@ Keying by run id puts all messages of one run on the same partition, so they are
 
 - Internal state transitions are applied **exactly once** per logical step attempt.
 - Message delivery is **at least once**.
-- External side effects are **not** automatically exactly-once. They are safe only if the external operation is idempotent (accepts an idempotency key) or can be reconciled.
+- External side effects are **not** automatically exactly-once. They are safe only if the external operation is idempotent (accepts an idempotency key) or can be reconciled. The simulated payment provider (`flowforge-payments`) demonstrates the idempotent case: it stores every `Idempotency-Key` under a unique constraint and replays the original result for a repeat, so a charge step that runs twice charges once.
+
+## Observability
+
+- **Traces.** Each run is one OpenTelemetry trace, exported over OTLP to Jaeger. The work of a run keeps crossing gaps where normal context propagation would start a new trace — it waits in PostgreSQL between steps and in the outbox before publishing — so the trace context is stored with the data: `workflow_run.trace_parent` holds the context the run started under; each claim records a "step" span as its child and stores that span's context on the outbox row; the publisher sends inside it, so Kafka's `traceparent` header carries it to the worker, whose handler span, payment-provider HTTP call and result all join the trace. Off unless `management.tracing.enabled` (`FLOWFORGE_TRACING_ENABLED`) is set; health probes, metric scrapes and dashboard polling are not traced.
+- **Metrics.** Every service exposes `/actuator/prometheus`. The engine adds counters (claimed, applied, stale, leases expired, outbox sent/failed), histograms of run duration by status and of attempt duration by step type and outcome, and gauges read from the database (active runs, leased attempts, waiting steps, outbox backlog). The payment provider counts new, replayed and declined requests. `deploy/helm/flowforge/files/grafana/flowforge.json` is a Grafana dashboard over all of them.
 - Kubernetes restarting a crashed pod does not provide recovery by itself; recovery comes from persisted state, leases and the sweeper.

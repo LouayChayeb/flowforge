@@ -71,7 +71,7 @@ class RecoveryTest extends IntegrationTest {
         outbox.deleteAll(pending);
 
         // Once the lease has expired, recovery times the attempt out and schedules a retry.
-        int recovered = stateService.recoverExpiredLeases(Instant.now().plus(Duration.ofHours(1)));
+        int recovered = recoverEverything();
         assertThat(recovered).isGreaterThanOrEqualTo(1);
         StepExecutionResponse step = load(runId).steps().get(0);
         assertThat(step.status()).isEqualTo(StepStatus.RETRY_WAIT);
@@ -96,7 +96,7 @@ class RecoveryTest extends IntegrationTest {
         jdbc.update("UPDATE step_execution SET status = 'RUNNING', lease_expires_at = now() - interval '1 hour' "
                 + "WHERE id = ?", poisoned);
         try {
-            stateService.recoverExpiredLeases(Instant.now().plus(Duration.ofHours(1)));
+            recoverEverything();
 
             assertThat(load(healthyRun).steps().get(0).status()).isEqualTo(StepStatus.RETRY_WAIT);
         } finally {
@@ -143,5 +143,19 @@ class RecoveryTest extends IntegrationTest {
         String name = uniqueWorkflowName();
         definitions.register(name, List.of(steps));
         return runService.start(name, Map.of("orderId", "ORD-1")).getId();
+    }
+    /**
+     * Treats every lease as expired and recovers until nothing is left, like the recovery loop does. One call handles
+     * a single batch, and steps left over by earlier tests in the shared database could fill it.
+     */
+    private int recoverEverything() {
+        Instant cutoff = Instant.now().plus(Duration.ofHours(1));
+        int total = 0;
+        int recovered;
+        do {
+            recovered = stateService.recoverExpiredLeases(cutoff);
+            total += recovered;
+        } while (recovered > 0);
+        return total;
     }
 }

@@ -6,6 +6,7 @@ import io.github.louaychayeb.flowforge.orchestrator.engine.EngineMetrics;
 import io.github.louaychayeb.flowforge.orchestrator.insight.EngineSettings;
 import io.github.louaychayeb.flowforge.orchestrator.insight.InsightQueries;
 import io.github.louaychayeb.flowforge.orchestrator.insight.KafkaInspector;
+import io.github.louaychayeb.flowforge.orchestrator.insight.PaymentsInspector;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -28,11 +29,13 @@ public class AdminController {
     private final KafkaInspector kafka;
     private final EngineSettings settings;
     private final EngineMetrics metrics;
+    private final PaymentsInspector payments;
     private final Clock clock;
 
     public AdminController(ConsistencyChecker checker, InsightQueries insight, KafkaInspector kafka,
-                           EngineSettings settings, EngineMetrics metrics, Clock clock) {
+                           EngineSettings settings, EngineMetrics metrics, PaymentsInspector payments, Clock clock) {
         this.checker = checker;
+        this.payments = payments;
         this.insight = insight;
         this.kafka = kafka;
         this.settings = settings;
@@ -71,5 +74,11 @@ public class AdminController {
     @GetMapping("/kafka")
     public KafkaInspector.KafkaView kafka() {
         return kafka.snapshot();
+    }
+
+    /** What the payment provider recorded: totals, and one order's charges with {@code ?orderId=}. */
+    @GetMapping("/payments")
+    public PaymentsInspector.PaymentsView payments(@RequestParam(required = false) String orderId) {
+        return payments.view(orderId);
     }
 }

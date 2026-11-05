@@ -46,10 +46,19 @@ public class OutboxEvent {
 
     private String lastError;
 
+    /** W3C traceparent of the step attempt that produced this event; {@code null} when tracing is off. */
+    private String traceParent;
+
     @Version
     private Long lockVersion;
 
     protected OutboxEvent() {
+    }
+
+    public OutboxEvent(String topic, String messageKey, Map<String, Object> payload, Instant createdAt,
+                       String traceParent) {
+        this(topic, messageKey, payload, createdAt);
+        this.traceParent = traceParent;
     }
 
     public OutboxEvent(String topic, String messageKey, Map<String, Object> payload, Instant createdAt) {
@@ -97,6 +106,10 @@ public class OutboxEvent {
 
     public int getPublishAttempts() {
         return publishAttempts;
+    }
+
+    public String getTraceParent() {
+        return traceParent;
     }
 
     public String getLastError() {

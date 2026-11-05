@@ -36,8 +36,8 @@ public class InsightQueries {
     }
 
     public record RunSummary(UUID runId, String workflow, int version, String status, String currentStep,
-                             String currentStepKind, Map<String, Object> input, Instant createdAt,
-                             Instant completedAt, int steps, int attempts, int failedAttempts) {
+                             String currentStepKind, int activeSteps, Map<String, Object> input,
+                             Instant createdAt, Instant completedAt, int steps, int attempts, int failedAttempts) {
     }
 
     /** The most recent runs, newest first, optionally only those in one status. */
@@ -46,6 +46,10 @@ public class InsightQueries {
         return jdbc.query("""
                 SELECT r.id, d.name, d.version, r.status, r.input::text AS input, r.created_at, r.completed_at,
                        cur.name AS current_step, cur.kind AS current_kind,
+                       (SELECT count(*) FROM step_execution s WHERE s.workflow_run_id = r.id
+                          AND r.status IN ('RUNNING', 'COMPENSATING')
+                          AND (s.status IN ('RUNNING', 'RETRY_WAIT')
+                               OR (s.status = 'PENDING' AND s.next_attempt_at IS NOT NULL))) AS active,
                        (SELECT count(*) FROM step_execution s WHERE s.workflow_run_id = r.id) AS steps,
                        (SELECT count(*) FROM step_attempt a JOIN step_execution s ON s.id = a.step_execution_id
                         WHERE s.workflow_run_id = r.id) AS attempts,
@@ -61,7 +65,7 @@ public class InsightQueries {
                 LIMIT :limit
                 """, new MapSqlParameterSource().addValue("limit", limit).addValue("status", status),
                 (rs, i) -> new RunSummary(rs.getObject("id", UUID.class), rs.getString("name"), rs.getInt("version"),
-                        rs.getString("status"), rs.getString("current_step"), rs.getString("current_kind"),
+                        rs.getString("status"), rs.getString("current_step"), rs.getString("current_kind"), rs.getInt("active"),
                         json(rs.getString("input")), instant(rs, "created_at"), instant(rs, "completed_at"),
                         rs.getInt("steps"), rs.getInt("attempts"), rs.getInt("failed_attempts")));
     }

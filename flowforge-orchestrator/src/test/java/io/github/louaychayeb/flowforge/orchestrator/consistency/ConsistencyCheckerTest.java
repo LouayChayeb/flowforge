@@ -84,7 +84,7 @@ class ConsistencyCheckerTest extends IntegrationTest {
         // Far in the future, so the engine running other tests never actually claims this corrupted step.
         jdbc.update("UPDATE step_execution SET next_attempt_at = now() + interval '100 years' WHERE id = ?", second);
 
-        assertThat(violatedInvariants(workflow)).containsExactly("no-step-ahead-of-run");
+        assertThat(violatedInvariants(workflow)).containsExactly("dependencies-respected");
     }
 
     @Test

@@ -21,6 +21,7 @@ import org.hibernate.type.SqlTypes;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,12 +29,17 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * One execution of a {@link WorkflowDefinition}. Steps run strictly in order: only the step at
- * {@code currentPosition} can be eligible, and the run advances when that step completes.
+ * One execution of a {@link WorkflowDefinition}.
  *
- * <p>If a step fails terminally after earlier steps completed, those that declare a compensation are
- * undone in reverse order (a saga). Compensation steps are appended after the forward steps and run
- * through the same claim, retry and lease machinery.
+ * <p>Forward steps form a dependency graph: a step becomes eligible as soon as every step it depends on has
+ * completed, so independent steps run in parallel. A workflow whose steps each depend on the previous one is the
+ * classic sequential case.
+ *
+ * <p>If a forward step fails for good, no new step starts; steps already in flight are allowed to finish, since
+ * they may still succeed and then need undoing too. Once nothing is in flight, the completed steps that declare a
+ * compensation are undone one at a time, most recently completed first — a saga. Compensation steps are appended
+ * after the forward steps and go through the same claim, retry and lease machinery; during compensation
+ * {@code currentPosition} is the compensation step that may run.
  */
 @Entity
 @Table(name = "workflow_run")
@@ -53,6 +59,7 @@ public class WorkflowRun {
     @Column(columnDefinition = "jsonb")
     private Map<String, Object> input;
 
+    /** The compensation step that may run; while forward steps run, the lowest-positioned active one. */
     private int currentPosition;
 
     private Instant createdAt;
@@ -60,6 +67,9 @@ public class WorkflowRun {
     private Instant updatedAt;
 
     private Instant completedAt;
+
+    /** W3C traceparent of the trace this run belongs to; {@code null} when tracing is off. */
+    private String traceParent;
 
     @Version
     private Long lockVersion;
@@ -82,7 +92,8 @@ public class WorkflowRun {
     }
 
     /**
-     * Creates a run with one {@link StepExecution} per step of the definition and makes the first step eligible.
+     * Creates the run with one forward step per definition step and makes every step without dependencies
+     * eligible.
      */
     public static WorkflowRun start(WorkflowDefinition definition, Map<String, Object> input, Instant now) {
         if (definition.getSteps().isEmpty()) {
@@ -92,42 +103,74 @@ public class WorkflowRun {
         for (StepDefinition stepDefinition : definition.getSteps()) {
             run.steps.add(StepExecution.forward(run, stepDefinition, now));
         }
-        run.steps.get(0).makeEligible(now);
+        for (StepExecution step : run.steps) {
+            if (step.getDependsOn().isEmpty()) {
+                step.makeEligible(now);
+            }
+        }
+        run.moveCursor();
         return run;
     }
 
-    /**
-     * Called by a step once it has completed. Makes the next step eligible, or ends the run:
-     * {@code COMPLETED} after the last forward step, {@code COMPENSATED} after the last compensation.
-     */
     void onStepCompleted(StepExecution step, Instant now) {
-        requireCurrent(step);
-        int next = step.getPosition() + 1;
-        if (next < steps.size()) {
-            advanceTo(next, now);
+        requireActive(step);
+        if (step.getKind() == StepKind.COMPENSATION) {
+            int next = step.getPosition() + 1;
+            if (next < steps.size()) {
+                currentPosition = next;
+                steps.get(next).makeEligible(now);
+                updatedAt = now;
+            } else {
+                transitionTo(RunStatus.COMPENSATED, now);
+            }
+            return;
+        }
+        if (isFailing()) {
+            // A step that was already in flight when another one failed. It completed, so it is compensated too.
+            finishFailureOnceDrained(now);
+            return;
+        }
+        boolean allCompleted = true;
+        for (StepExecution candidate : forwardSteps()) {
+            if (candidate.getStatus() != StepStatus.COMPLETED) {
+                allCompleted = false;
+                if (candidate.isWaitingForDependencies() && dependenciesCompleted(candidate)) {
+                    candidate.makeEligible(now);
+                }
+            }
+        }
+        if (allCompleted) {
+            transitionTo(RunStatus.COMPLETED, now);
         } else {
-            transitionTo(status == RunStatus.COMPENSATING ? RunStatus.COMPENSATED : RunStatus.COMPLETED, now);
+            updatedAt = now;
+            moveCursor();
         }
     }
 
-    /**
-     * Called by a step once it has failed terminally. A failed forward step starts compensation of the
-     * completed steps that declare one, or fails the run if there are none. A failed compensation leaves
-     * the run in {@code COMPENSATION_FAILED}: the system can no longer restore a consistent state by itself.
-     */
     void onStepFailed(StepExecution step, Instant now) {
-        requireCurrent(step);
-        if (status == RunStatus.COMPENSATING) {
+        requireActive(step);
+        if (step.getKind() == StepKind.COMPENSATION) {
             transitionTo(RunStatus.COMPENSATION_FAILED, now);
             return;
         }
-        List<StepExecution> toCompensate = new ArrayList<>();
-        for (int i = step.getPosition() - 1; i >= 0; i--) {
-            StepExecution completed = steps.get(i);
-            if (completed.getStatus() == StepStatus.COMPLETED && completed.getCompensationType() != null) {
-                toCompensate.add(completed);
-            }
+        finishFailureOnceDrained(now);
+    }
+
+    /**
+     * After a forward step failed for good: if no forward step is still in flight, undo the completed ones (most
+     * recently completed first) or, with nothing to undo, fail the run. Otherwise wait for the next outcome.
+     */
+    private void finishFailureOnceDrained(Instant now) {
+        updatedAt = now;
+        if (forwardSteps().stream().anyMatch(StepExecution::isInFlight)) {
+            moveCursor();
+            return;
         }
+        List<StepExecution> toCompensate = forwardSteps().stream()
+                .filter(s -> s.getStatus() == StepStatus.COMPLETED && s.getCompensationType() != null)
+                .sorted(Comparator.comparing(StepExecution::completedAt)
+                        .thenComparing(StepExecution::getPosition).reversed())
+                .toList();
         if (toCompensate.isEmpty()) {
             transitionTo(RunStatus.FAILED, now);
             return;
@@ -137,20 +180,37 @@ public class WorkflowRun {
         for (StepExecution completed : toCompensate) {
             steps.add(StepExecution.compensation(this, completed, steps.size(), now));
         }
-        advanceTo(firstCompensation, now);
+        currentPosition = firstCompensation;
+        steps.get(firstCompensation).makeEligible(now);
     }
 
-    private void advanceTo(int position, Instant now) {
-        currentPosition = position;
-        steps.get(position).makeEligible(now);
-        updatedAt = now;
+    /** A forward step has failed for good: nothing new may start. */
+    private boolean isFailing() {
+        return forwardSteps().stream().anyMatch(s -> s.getStatus() == StepStatus.FAILED);
     }
 
-    private void requireCurrent(StepExecution step) {
-        if (step.getPosition() != currentPosition) {
-            throw new IllegalStateTransitionException("Step %s at position %d is not the current step (%d) of run %s"
-                    .formatted(step.getName(), step.getPosition(), currentPosition, id));
+    private boolean dependenciesCompleted(StepExecution step) {
+        return step.getDependsOn().stream().allMatch(p -> steps.get(p).getStatus() == StepStatus.COMPLETED);
+    }
+
+    private List<StepExecution> forwardSteps() {
+        return steps.stream().filter(s -> s.getKind() == StepKind.FORWARD).toList();
+    }
+
+    private void requireActive(StepExecution step) {
+        boolean allowed = step.getKind() == StepKind.COMPENSATION
+                ? status == RunStatus.COMPENSATING && step.getPosition() == currentPosition
+                : status == RunStatus.RUNNING;
+        if (!allowed) {
+            throw new IllegalStateTransitionException("Step %s at position %d cannot report while run %s is %s"
+                    .formatted(step.getName(), step.getPosition(), id, status));
         }
+    }
+
+    /** While forward steps run, point currentPosition at the lowest-positioned active one (for display). */
+    private void moveCursor() {
+        forwardSteps().stream().filter(StepExecution::isInFlight).findFirst()
+                .ifPresent(s -> currentPosition = s.getPosition());
     }
 
     private void transitionTo(RunStatus target, Instant now) {
@@ -164,11 +224,23 @@ public class WorkflowRun {
         }
     }
 
-    /**
-     * The step currently executing or waiting to execute; empty once the run is terminal.
-     */
+    /** The first step that may run or is running now, if any. With parallel steps see {@link #activeSteps()}. */
     public Optional<StepExecution> currentStep() {
-        return status.isTerminal() ? Optional.empty() : Optional.of(steps.get(currentPosition));
+        if (status.isTerminal()) {
+            return Optional.empty();
+        }
+        if (status == RunStatus.COMPENSATING) {
+            return Optional.of(steps.get(currentPosition));
+        }
+        return forwardSteps().stream().filter(StepExecution::isInFlight).findFirst();
+    }
+
+    /** Every step that is eligible, running or waiting to retry. */
+    public List<StepExecution> activeSteps() {
+        if (status.isTerminal()) {
+            return List.of();
+        }
+        return steps.stream().filter(StepExecution::isInFlight).toList();
     }
 
     public UUID getId() {
@@ -201,6 +273,15 @@ public class WorkflowRun {
 
     public Instant getCompletedAt() {
         return completedAt;
+    }
+
+    public String getTraceParent() {
+        return traceParent;
+    }
+
+    /** Records the trace this run belongs to; see {@code RunTracing}. */
+    public void attachTrace(String traceParent) {
+        this.traceParent = traceParent;
     }
 
     public List<StepExecution> getSteps() {

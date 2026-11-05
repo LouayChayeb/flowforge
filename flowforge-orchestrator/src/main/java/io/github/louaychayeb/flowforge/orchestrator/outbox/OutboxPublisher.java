@@ -2,6 +2,7 @@ package io.github.louaychayeb.flowforge.orchestrator.outbox;
 
 import io.github.louaychayeb.flowforge.orchestrator.engine.EngineMetrics;
 import io.github.louaychayeb.flowforge.orchestrator.engine.EngineProperties;
+import io.github.louaychayeb.flowforge.orchestrator.engine.RunTracing;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -32,14 +33,16 @@ public class OutboxPublisher {
     private final KafkaTemplate<String, Object> kafka;
     private final EngineProperties properties;
     private final EngineMetrics metrics;
+    private final RunTracing tracing;
     private final Clock clock;
 
     public OutboxPublisher(OutboxEventRepository events, KafkaTemplate<String, Object> kafka,
-                           EngineProperties properties, EngineMetrics metrics, Clock clock) {
+                           EngineProperties properties, EngineMetrics metrics, RunTracing tracing, Clock clock) {
         this.events = events;
         this.kafka = kafka;
         this.properties = properties;
         this.metrics = metrics;
+        this.tracing = tracing;
         this.clock = clock;
     }
 
@@ -60,7 +63,9 @@ public class OutboxPublisher {
         List<CompletableFuture<?>> sends = new ArrayList<>(pending.size());
         for (OutboxEvent event : pending) {
             try {
-                sends.add(kafka.send(event.getTopic(), event.getMessageKey(), event.getPayload()));
+                // Inside the attempt's trace, so the producer puts it in the Kafka headers for the worker.
+                sends.add(tracing.inTrace(event.getTraceParent(), "outbox publish",
+                        () -> kafka.send(event.getTopic(), event.getMessageKey(), event.getPayload())));
             } catch (RuntimeException e) {
                 sends.add(CompletableFuture.failedFuture(e));
             }

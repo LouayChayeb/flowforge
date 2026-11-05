@@ -2,6 +2,7 @@ package io.github.louaychayeb.flowforge.orchestrator.run;
 
 import io.github.louaychayeb.flowforge.orchestrator.definition.StepDefinition;
 import jakarta.persistence.CascadeType;
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -13,6 +14,8 @@ import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -59,6 +62,11 @@ public class StepExecution {
     @JoinColumn(name = "compensates_step_execution_id")
     private StepExecution compensates;
 
+    /** For a forward step: positions of the forward steps it waits for. Empty for compensation steps. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb")
+    private List<Integer> dependsOn = new ArrayList<>();
+
     @Enumerated(EnumType.STRING)
     private StepStatus status;
 
@@ -103,6 +111,7 @@ public class StepExecution {
         StepExecution step = new StepExecution(run, definition.getPosition(), definition.getName(),
                 definition.getStepType(), StepKind.FORWARD, definition.getMaxAttempts(), now);
         step.compensationType = definition.getCompensationType();
+        step.dependsOn = new ArrayList<>(definition.getDependsOn());
         return step;
     }
 
@@ -228,6 +237,35 @@ public class StepExecution {
 
     public String getCompensationType() {
         return compensationType;
+    }
+
+    /** For a compensation step, the completed step it undoes; otherwise {@code null}. */
+    public StepExecution getCompensates() {
+        return compensates;
+    }
+
+    /** Positions of the forward steps this one waits for. */
+    public List<Integer> getDependsOn() {
+        return Collections.unmodifiableList(dependsOn);
+    }
+
+    /** Not started and not yet eligible: still waiting for its dependencies (or never going to run). */
+    boolean isWaitingForDependencies() {
+        return status == StepStatus.PENDING && nextAttemptAt == null && attemptCount == 0;
+    }
+
+    /** Eligible, running or between retries: work that has started and will still produce an outcome. */
+    boolean isInFlight() {
+        return status == StepStatus.RUNNING || status == StepStatus.RETRY_WAIT
+                || (status == StepStatus.PENDING && nextAttemptAt != null);
+    }
+
+    /** When the successful attempt finished, or {@code null} if the step has not completed. */
+    Instant completedAt() {
+        if (status != StepStatus.COMPLETED || attempts.isEmpty()) {
+            return null;
+        }
+        return attempts.get(attempts.size() - 1).getFinishedAt();
     }
 
     public StepStatus getStatus() {

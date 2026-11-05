@@ -62,29 +62,54 @@ public class ConsistencyChecker {
                         OR (s.status <> 'COMPLETED' AND EXISTS (
                               SELECT 1 FROM step_attempt a WHERE a.step_execution_id = s.id AND a.status = 'SUCCEEDED')))
                     """),
-            new Invariant("no-step-ahead-of-run",
-                    "No step beyond the run's current position has been attempted or made eligible",
+            new Invariant("dependencies-respected",
+                    "No step was attempted or made eligible before every step it depends on completed, and no "
+                            + "compensation ahead of the run's compensation cursor",
                     """
                     SELECT s.id::text FROM step_execution s
                     JOIN workflow_run r ON r.id = s.workflow_run_id
                     """ + SCOPE + """
-                      AND s.position > r.current_position
                       AND (s.attempt_count > 0 OR s.next_attempt_at IS NOT NULL)
+                      AND ((s.kind = 'FORWARD' AND EXISTS (
+                                SELECT 1 FROM jsonb_array_elements_text(s.depends_on) AS dep(pos)
+                                JOIN step_execution dep_step ON dep_step.workflow_run_id = s.workflow_run_id
+                                                            AND dep_step.position = dep.pos::int
+                                WHERE dep_step.status <> 'COMPLETED'))
+                        OR (s.kind = 'COMPENSATION' AND s.position > r.current_position))
                     """),
-            new Invariant("sequential-in-time",
-                    "Each forward step's first attempt started only after the previous step succeeded",
+            new Invariant("ordered-in-time",
+                    "Each step's first attempt started only after what it waits for finished: its dependencies' "
+                            + "successes for a forward step; every forward attempt and the previous compensation for "
+                            + "a compensation step",
                     """
-                    SELECT nxt.id::text FROM step_execution prev
-                    JOIN step_execution nxt ON nxt.workflow_run_id = prev.workflow_run_id
-                                           AND nxt.position = prev.position + 1
-                    JOIN step_attempt first_try ON first_try.step_execution_id = nxt.id
-                                               AND first_try.attempt_number = 1
-                    JOIN workflow_run r ON r.id = prev.workflow_run_id
+                    SELECT s.id::text FROM step_execution s
+                    JOIN step_attempt first_try ON first_try.step_execution_id = s.id AND first_try.attempt_number = 1
+                    JOIN workflow_run r ON r.id = s.workflow_run_id
                     """ + SCOPE + """
-                      AND nxt.kind = 'FORWARD'
-                      AND NOT EXISTS (SELECT 1 FROM step_attempt ok
-                                      WHERE ok.step_execution_id = prev.id AND ok.status = 'SUCCEEDED'
-                                        AND ok.finished_at <= first_try.started_at)
+                      AND s.kind = 'FORWARD'
+                      AND EXISTS (
+                          SELECT 1 FROM jsonb_array_elements_text(s.depends_on) AS dep(pos)
+                          JOIN step_execution dep_step ON dep_step.workflow_run_id = s.workflow_run_id
+                                                      AND dep_step.position = dep.pos::int
+                          WHERE NOT EXISTS (SELECT 1 FROM step_attempt ok
+                                            WHERE ok.step_execution_id = dep_step.id AND ok.status = 'SUCCEEDED'
+                                              AND ok.finished_at <= first_try.started_at))
+                    UNION ALL
+                    SELECT s.id::text FROM step_execution s
+                    JOIN step_attempt first_try ON first_try.step_execution_id = s.id AND first_try.attempt_number = 1
+                    JOIN workflow_run r ON r.id = s.workflow_run_id
+                    """ + SCOPE + """
+                      AND s.kind = 'COMPENSATION'
+                      AND (EXISTS (SELECT 1 FROM step_execution f
+                                   JOIN step_attempt fa ON fa.step_execution_id = f.id
+                                   WHERE f.workflow_run_id = s.workflow_run_id AND f.kind = 'FORWARD'
+                                     AND (fa.finished_at IS NULL OR fa.finished_at > first_try.started_at))
+                        OR EXISTS (SELECT 1 FROM step_execution prev
+                                   WHERE prev.workflow_run_id = s.workflow_run_id AND prev.position = s.position - 1
+                                     AND prev.kind = 'COMPENSATION'
+                                     AND NOT EXISTS (SELECT 1 FROM step_attempt ok
+                                                     WHERE ok.step_execution_id = prev.id AND ok.status = 'SUCCEEDED'
+                                                       AND ok.finished_at <= first_try.started_at)))
                     """),
             new Invariant("completed-run-is-complete",
                     "A COMPLETED run has every step completed and nothing compensated",

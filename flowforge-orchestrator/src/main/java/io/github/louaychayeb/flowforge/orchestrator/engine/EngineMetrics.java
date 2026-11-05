@@ -2,7 +2,10 @@ package io.github.louaychayeb.flowforge.orchestrator.engine;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
+
+import java.time.Duration;
 
 /**
  * Counters for what the engine does, exposed under {@code /actuator/metrics/flowforge.*}. The stale-result
@@ -17,8 +20,10 @@ public class EngineMetrics {
     private final Counter leasesExpired;
     private final Counter outboxPublished;
     private final Counter outboxFailures;
+    private final MeterRegistry registry;
 
     public EngineMetrics(MeterRegistry registry) {
+        this.registry = registry;
         this.stepsClaimed = Counter.builder("flowforge.steps.claimed")
                 .description("Step attempts claimed by a dispatcher").register(registry);
         this.resultsApplied = Counter.builder("flowforge.results").tag("result", "applied")
@@ -31,6 +36,20 @@ public class EngineMetrics {
                 .description("Outbox events sent to Kafka").register(registry);
         this.outboxFailures = Counter.builder("flowforge.outbox.failures")
                 .description("Failed attempts to send an outbox event").register(registry);
+    }
+
+    /** End-to-end duration of a finished run, by workflow and final status; a histogram, for percentiles. */
+    public void runFinished(String workflow, String status, Duration duration) {
+        Timer.builder("flowforge.run.duration").description("Time from run start to its terminal status")
+                .tag("workflow", workflow).tag("status", status).publishPercentileHistogram()
+                .register(registry).record(duration);
+    }
+
+    /** How long one attempt took from claim to outcome, by step type and outcome. */
+    public void attemptFinished(String stepType, String outcome, Duration duration) {
+        Timer.builder("flowforge.step.attempt.duration").description("Time from claiming an attempt to its outcome")
+                .tag("type", stepType).tag("outcome", outcome).publishPercentileHistogram()
+                .register(registry).record(duration);
     }
 
     public void stepsClaimed(int count) {

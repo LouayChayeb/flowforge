@@ -53,8 +53,27 @@ public class WorkflowDefinition {
         addStep(stepName, stepType, maxAttempts, null);
     }
 
+    /** Adds a step that waits for the step before it (the first step waits for nothing). */
     public void addStep(String stepName, String stepType, int maxAttempts, String compensationType) {
-        steps.add(new StepDefinition(this, steps.size(), stepName, stepType, maxAttempts, compensationType));
+        addStep(stepName, stepType, maxAttempts, compensationType,
+                steps.isEmpty() ? List.of() : List.of(steps.size() - 1));
+    }
+
+    /**
+     * Adds a step that waits for the steps at the given positions, which must all be earlier steps: that rule
+     * alone makes a cycle impossible.
+     */
+    public void addStep(String stepName, String stepType, int maxAttempts, String compensationType,
+                        List<Integer> dependsOn) {
+        int position = steps.size();
+        for (int dependency : dependsOn) {
+            if (dependency < 0 || dependency >= position) {
+                throw new IllegalArgumentException("Step " + stepName + " can only depend on earlier steps, not position "
+                        + dependency);
+            }
+        }
+        steps.add(new StepDefinition(this, position, stepName, stepType, maxAttempts, compensationType,
+                dependsOn.stream().distinct().sorted().toList()));
     }
 
     public UUID getId() {

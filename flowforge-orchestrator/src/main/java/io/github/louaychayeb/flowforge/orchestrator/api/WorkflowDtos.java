@@ -39,7 +39,9 @@ public final class WorkflowDtos {
             String type,
             @Min(1) @Max(20) Integer maxAttempts,
             @Size(max = 100) @Pattern(regexp = STEP_TYPE_PATTERN, message = "must be UPPER_SNAKE_CASE")
-            String compensateWith
+            String compensateWith,
+            // Names of earlier steps to wait for. Omitted: the previous step. Empty: start immediately.
+            List<@NotBlank String> dependsOn
     ) {
     }
 
@@ -47,15 +49,16 @@ public final class WorkflowDtos {
 
         public static WorkflowResponse from(WorkflowDefinition definition) {
             return new WorkflowResponse(definition.getName(), definition.getVersion(), definition.getCreatedAt(),
-                    definition.getSteps().stream().map(StepResponse::from).toList());
+                    definition.getSteps().stream().map(s -> StepResponse.from(s, definition.getSteps())).toList());
         }
     }
 
-    public record StepResponse(String name, String type, int maxAttempts, String compensateWith) {
+    public record StepResponse(String name, String type, int maxAttempts, String compensateWith,
+                               List<String> dependsOn) {
 
-        public static StepResponse from(StepDefinition step) {
+        public static StepResponse from(StepDefinition step, List<StepDefinition> all) {
             return new StepResponse(step.getName(), step.getStepType(), step.getMaxAttempts(),
-                    step.getCompensationType());
+                    step.getCompensationType(), step.getDependsOn().stream().map(p -> all.get(p).getName()).toList());
         }
     }
 

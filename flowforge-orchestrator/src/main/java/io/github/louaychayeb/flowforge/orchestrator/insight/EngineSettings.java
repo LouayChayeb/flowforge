@@ -22,17 +22,19 @@ public class EngineSettings {
                           @Value("${flowforge.engine.scheduler.outbox-interval-ms:200}") long outboxIntervalMs,
                           @Value("${flowforge.engine.scheduler.recovery-interval-ms:5000}") long recoveryIntervalMs,
                           @Value("${flowforge.kafka.partitions:3}") int partitions,
-                          @Value("${spring.kafka.listener.concurrency:1}") int listenerConcurrency) {
+                          @Value("${spring.kafka.listener.concurrency:1}") int listenerConcurrency,
+                          @Value("${flowforge.insight.trace-url:}") String traceUrl) {
         this.view = new View(instance, schedulerEnabled, dispatchIntervalMs, outboxIntervalMs, recoveryIntervalMs,
                 properties.batchSize(), properties.leaseDuration(), properties.publishTimeout(),
                 properties.retry().initialBackoff(), properties.retry().maxBackoff(), properties.retry().multiplier(),
-                partitions, listenerConcurrency);
+                partitions, listenerConcurrency, properties.wakeup(), traceUrl.isBlank() ? null : traceUrl);
     }
 
     public record View(String instance, boolean schedulerEnabled, long dispatchIntervalMs, long outboxIntervalMs,
                        long recoveryIntervalMs, int batchSize, Duration leaseDuration, Duration publishTimeout,
                        Duration initialBackoff, Duration maxBackoff, double backoffMultiplier, int partitions,
-                       int resultListenerThreads) {
+                       int resultListenerThreads, boolean wakeup,
+                       String traceUrl) {
     }
 
     public View view() {

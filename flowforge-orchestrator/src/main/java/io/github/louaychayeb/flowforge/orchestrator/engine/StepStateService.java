@@ -11,13 +11,17 @@ import io.github.louaychayeb.flowforge.orchestrator.run.StepAttempt;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepExecution;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepExecutionRepository;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepStatus;
+import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRun;
+import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRunRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,18 +41,26 @@ public class StepStateService {
     };
 
     private final StepExecutionRepository steps;
+    private final WorkflowRunRepository runs;
     private final OutboxEventRepository outbox;
     private final RetryPolicy retryPolicy;
     private final EngineProperties properties;
     private final ObjectMapper objectMapper;
     private final EngineMetrics metrics;
     private final TransactionTemplate transactions;
+    private final ApplicationEventPublisher events;
+    private final RunTracing tracing;
     private final Clock clock;
 
-    public StepStateService(StepExecutionRepository steps, OutboxEventRepository outbox, RetryPolicy retryPolicy,
+    public StepStateService(StepExecutionRepository steps, WorkflowRunRepository runs, OutboxEventRepository outbox,
+                            RetryPolicy retryPolicy,
                             EngineProperties properties, ObjectMapper objectMapper, EngineMetrics metrics,
-                            TransactionTemplate transactions, Clock clock) {
+                            TransactionTemplate transactions, ApplicationEventPublisher events, RunTracing tracing,
+                            Clock clock) {
+        this.events = events;
+        this.tracing = tracing;
         this.steps = steps;
+        this.runs = runs;
         this.outbox = outbox;
         this.retryPolicy = retryPolicy;
         this.properties = properties;
@@ -76,12 +88,18 @@ public class StepStateService {
                     step.getStepType(),
                     attempt.getAttemptNumber(),
                     step.getRun().getInput(),
-                    step.getLeaseExpiresAt());
+                    step.getLeaseExpiresAt(),
+                    step.getCompensates() == null ? null : step.getCompensates().getId());
+            String traceParent = tracing.stepClaimed(step.getRun().getTraceParent(), claimedStep.runId().toString(),
+                    step.getName(), step.getStepType(), attempt.getAttemptNumber());
             outbox.save(new OutboxEvent(Topics.STEP_COMMANDS, claimedStep.runId().toString(),
-                    objectMapper.convertValue(claimedStep.toCommand(), JSON_OBJECT), now));
+                    objectMapper.convertValue(claimedStep.toCommand(), JSON_OBJECT), now, traceParent));
             claimed.add(claimedStep);
         }
         metrics.stepsClaimed(claimed.size());
+        if (!claimed.isEmpty()) {
+            events.publishEvent(new EngineEvents.CommandsWritten(claimed.size()));
+        }
         return claimed;
     }
 
@@ -98,12 +116,48 @@ public class StepStateService {
         Instant now = clock.instant();
         StepExecution step = steps.findByIdForUpdate(stepExecutionId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown step execution " + stepExecutionId));
+        lockRun(step);
         switch (result.outcome()) {
             case SUCCEEDED -> step.complete(attempt, now);
             case RETRYABLE_FAILURE ->
                     step.failRetryable(attempt, result.errorMessage(), retryPolicy.backoffAfter(attempt), now);
             case PERMANENT_FAILURE -> step.failPermanently(attempt, result.errorMessage(), now);
         }
+        recordTimings(step);
+        announceReadySteps(step, now);
+    }
+
+    /**
+     * Attempt and run durations for Prometheus. Recorded just before the transaction commits; in the rare case it
+     * then rolls back, the outcome is applied again on redelivery and counted twice — fine for a latency histogram.
+     */
+    private void recordTimings(StepExecution step) {
+        StepAttempt last = step.getAttempts().get(step.getAttempts().size() - 1);
+        if (last.getFinishedAt() != null) {
+            metrics.attemptFinished(step.getStepType(), last.getStatus().name(),
+                    Duration.between(last.getStartedAt(), last.getFinishedAt()));
+        }
+        WorkflowRun run = step.getRun();
+        if (run.getStatus().isTerminal()) {
+            metrics.runFinished(run.getDefinition().getName(), run.getStatus().name(),
+                    Duration.between(run.getCreatedAt(), run.getCompletedAt()));
+        }
+    }
+
+    /** Step row first, then run row — the same order everywhere, so the two locks cannot deadlock. */
+    private void lockRun(StepExecution step) {
+        runs.findByIdForUpdate(step.getRun().getId())
+                .orElseThrow(() -> new IllegalStateException("Run of step " + step.getId() + " disappeared"));
+    }
+
+    /**
+     * After a step changed, the next step (or this one, after its backoff) may be claimable: tell
+     * {@link EngineWakeup}, which acts once this transaction has committed.
+     */
+    private void announceReadySteps(StepExecution step, Instant now) {
+        Instant at = step.getStatus() == StepStatus.RETRY_WAIT && step.getNextAttemptAt() != null
+                ? step.getNextAttemptAt() : now;
+        events.publishEvent(new EngineEvents.StepsMayBeReady(at));
     }
 
     /**
@@ -137,7 +191,11 @@ public class StepStateService {
         if (step == null || step.getStatus() != StepStatus.RUNNING || !step.getLeaseExpiresAt().isBefore(cutoff)) {
             return false;
         }
-        step.expireLease(retryPolicy.backoffAfter(step.getAttemptCount()), clock.instant());
+        lockRun(step);
+        Instant now = clock.instant();
+        step.expireLease(retryPolicy.backoffAfter(step.getAttemptCount()), now);
+        recordTimings(step);
+        announceReadySteps(step, now);
         return true;
     }
 }

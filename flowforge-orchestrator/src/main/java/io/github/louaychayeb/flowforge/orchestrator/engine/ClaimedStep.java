@@ -9,6 +9,8 @@ import java.util.UUID;
 /**
  * A step attempt that has been claimed (moved to {@code RUNNING}) and is ready to be sent to a worker.
  * Detached from the persistence context so it can be published outside a transaction.
+ *
+ * @param compensatesStepExecutionId for a compensation step, the step it undoes; otherwise {@code null}
  */
 public record ClaimedStep(
         UUID runId,
@@ -17,11 +19,12 @@ public record ClaimedStep(
         String stepType,
         int attempt,
         Map<String, Object> input,
-        Instant leaseExpiresAt
+        Instant leaseExpiresAt,
+        UUID compensatesStepExecutionId
 ) {
 
     public StepCommand toCommand() {
         return new StepCommand(UUID.randomUUID(), runId, stepExecutionId, stepName, stepType, attempt, input,
-                leaseExpiresAt);
+                leaseExpiresAt, compensatesStepExecutionId);
     }
 }

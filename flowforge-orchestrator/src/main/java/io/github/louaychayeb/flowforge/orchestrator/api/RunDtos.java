@@ -1,5 +1,6 @@
 package io.github.louaychayeb.flowforge.orchestrator.api;
 
+import io.github.louaychayeb.flowforge.orchestrator.engine.RunTracing;
 import io.github.louaychayeb.flowforge.orchestrator.run.AttemptStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.RunStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.StepAttempt;
@@ -35,10 +36,12 @@ public final class RunDtos {
             int version,
             RunStatus status,
             String currentStep,
+            List<String> activeSteps,
             Map<String, Object> input,
             Instant createdAt,
             Instant updatedAt,
             Instant completedAt,
+            String traceId,
             List<StepExecutionResponse> steps
     ) {
 
@@ -49,10 +52,14 @@ public final class RunDtos {
                     run.getDefinition().getVersion(),
                     run.getStatus(),
                     run.currentStep().map(StepExecution::getName).orElse(null),
+                    run.activeSteps().stream()
+                            .map(s -> s.getKind() == StepKind.COMPENSATION ? "undo " + s.getName() : s.getName())
+                            .toList(),
                     run.getInput(),
                     run.getCreatedAt(),
                     run.getUpdatedAt(),
                     run.getCompletedAt(),
+                    RunTracing.traceId(run.getTraceParent()),
                     run.getSteps().stream().map(StepExecutionResponse::from).toList());
         }
     }
@@ -65,6 +72,7 @@ public final class RunDtos {
             StepStatus status,
             int attemptCount,
             int maxAttempts,
+            List<String> dependsOn,
             Instant nextAttemptAt,
             Instant leaseExpiresAt,
             List<AttemptResponse> attempts
@@ -72,7 +80,9 @@ public final class RunDtos {
 
         public static StepExecutionResponse from(StepExecution step) {
             return new StepExecutionResponse(step.getId(), step.getName(), step.getStepType(), step.getKind(),
-                    step.getStatus(), step.getAttemptCount(), step.getMaxAttempts(), step.getNextAttemptAt(),
+                    step.getStatus(), step.getAttemptCount(), step.getMaxAttempts(),
+                    step.getDependsOn().stream().map(p -> step.getRun().getSteps().get(p).getName()).toList(),
+                    step.getNextAttemptAt(),
                     step.getLeaseExpiresAt(), step.getAttempts().stream().map(AttemptResponse::from).toList());
         }
     }

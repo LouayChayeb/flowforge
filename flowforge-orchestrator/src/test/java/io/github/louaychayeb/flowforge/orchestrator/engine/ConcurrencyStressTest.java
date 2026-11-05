@@ -106,11 +106,12 @@ class ConcurrencyStressTest extends IntegrationTest {
     @Test
     void invariantsHoldUnderConcurrencyDuplicatesAndTimeouts() throws Exception {
         String workflow = uniqueWorkflowName();
+        // A diamond, so parallel branches race each other as well as the chaos: reserve → (flaky ∥ charge) → finish.
         definitions.register(workflow, List.of(
-                new NewStep("reserve", TestStepHandlers.OK, MAX_ATTEMPTS, TestStepHandlers.UNDO),
-                new NewStep("flaky", TestStepHandlers.SOMETIMES, MAX_ATTEMPTS, TestStepHandlers.UNDO),
-                new NewStep("charge", TestStepHandlers.OK, MAX_ATTEMPTS, TestStepHandlers.UNDO),
-                new NewStep("finish", TestStepHandlers.FAIL_IF_FLAGGED, MAX_ATTEMPTS)));
+                new NewStep("reserve", TestStepHandlers.OK, MAX_ATTEMPTS, TestStepHandlers.UNDO, List.of()),
+                new NewStep("flaky", TestStepHandlers.SOMETIMES, MAX_ATTEMPTS, TestStepHandlers.UNDO, List.of("reserve")),
+                new NewStep("charge", TestStepHandlers.OK, MAX_ATTEMPTS, TestStepHandlers.UNDO, List.of("reserve")),
+                new NewStep("finish", TestStepHandlers.FAIL_IF_FLAGGED, MAX_ATTEMPTS, null, List.of("flaky", "charge"))));
         Map<UUID, RunStatus> expected = new HashMap<>();
         for (int i = 0; i < RUNS; i++) {
             boolean fail = i % 4 == 0;

@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: flowforge-payments
+  datasource:
+    url: ${FLOWFORGE_PAYMENTS_DB_URL:jdbc:postgresql://localhost:5432/flowforge}
+    username: ${FLOWFORGE_PAYMENTS_DB_USER:flowforge}
+    password: ${FLOWFORGE_PAYMENTS_DB_PASSWORD:flowforge}
+  flyway:
+    # Its own schema and migration history, independent of the orchestrator's.
+    schemas: payments
+    default-schema: payments
+
+server:
+  port: 8084
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      # Lets one Prometheus tell orchestrator, worker and payment provider apart.
+      application: ${spring.application.name}
+  tracing:
+    # Off unless a collector is there to receive spans (docker compose and the Helm chart switch it on).
+    enabled: ${FLOWFORGE_TRACING_ENABLED:false}
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${FLOWFORGE_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+  observations:
+    enable:
+      # The engine loops tick every few hundred milliseconds; tracing each tick would bury the traces that matter.
+      tasks.scheduled: false
+
+flowforge:
+  payments:
+    # Amounts above this are declined, like a card limit.
+    decline-above: 10000

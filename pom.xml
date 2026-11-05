@@ -24,6 +24,7 @@
         <module>flowforge-common</module>
         <module>flowforge-orchestrator</module>
         <module>flowforge-worker</module>
+        <module>flowforge-payments</module>
     </modules>
 
     <properties>

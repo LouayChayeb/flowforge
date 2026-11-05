@@ -77,6 +77,8 @@ The orchestrator serves a live dashboard at its root, **http://localhost:8080/**
 | `GET` | `/api/workflows/{name}` | Latest version of a definition |
 | `POST` | `/api/workflows/{name}/runs` | Start a run; returns `202 Accepted` immediately with a `Location` to poll |
 | `GET` | `/api/runs/{runId}` | Run status, every step's state and the full attempt history |
+| `POST` | `/api/runs/{runId}/cancel` | Cancel a running run: nothing new starts, completed steps are undone, the run ends `CANCELLED` |
+| `POST` | `/api/runs/{runId}/retry` | Retry a compensation that failed (`COMPENSATION_FAILED` → `COMPENSATING`) once the cause is fixed |
 | `GET` | `/api/admin/consistency` | Check the stored history against FlowForge's [invariants](docs/correctness.md); `?workflow=` to narrow it |
 
 Read-only endpoints behind the dashboard:
@@ -91,7 +93,30 @@ Read-only endpoints behind the dashboard:
 | `GET` | `/api/admin/kafka` | Topics, consumer groups, partition ownership and lag |
 | `GET` | `/api/admin/consistency/invariants` | Names and meaning of the ten invariants |
 
-Errors are returned as RFC 9457 problem details (`application/problem+json`).
+Operator actions take an optional `X-Actor` header and `{"reason": "…"}` body; both are kept in an audit table and returned with the run.
+
+Errors are RFC 9457 problem details with a stable `code`, a `type` URN, structured details and the `traceId`:
+
+```json
+{
+  "type": "urn:flowforge:problem:operation-not-allowed",
+  "title": "Operation not allowed",
+  "status": 409,
+  "detail": "Run 7c0e… is CANCELLED and can no longer be cancelled",
+  "code": "OPERATION_NOT_ALLOWED",
+  "runId": "7c0e…",
+  "runStatus": "CANCELLED",
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+Validation failures (`VALIDATION_FAILED`) list every invalid field under `errors`; lock conflicts are `409 CONCURRENT_MODIFICATION` and safe to repeat; unexpected errors are a `500` that never leaks internals.
+
+### Step outputs, timers and cancellation
+
+- **Outputs.** A handler returns `StepHandlerResult.succeeded(Map.of("reservationId", id))`; the output (at most 64 KB of JSON) is stored on the step and handed to every later step: `context.requireOutput("reserve-inventory", "reservationId")`. That is how the undo step knows what to release.
+- **Durable timers.** A step of type `WAIT` with `"waitFor": "PT20S"` (up to 30 days) pauses the run. Its due time is stored when its dependencies complete; the orchestrator completes it itself — no worker, no Kafka message — so it survives restarts. See [the cooling-off example](docs/examples/order-with-cooling-off.json).
+- **Typed failures.** Handlers throw `StepFailureException.Retryable`, `.Permanent` or `.InvalidInput` (a sealed hierarchy) instead of building results by hand; any other exception counts as retryable.
 
 **1. Register a workflow** ([example file](docs/examples/order-processing.json)):
 
@@ -199,6 +224,9 @@ Every state change is validated (terminal states can never be left), results mus
 | A step keeps failing | Bounded retries with exponential backoff, then the step fails |
 | A later step fails permanently | Completed steps are compensated in reverse order of completion |
 | A step fails while a parallel sibling is running | No new step starts; the sibling finishes (and is undone if it succeeded) before compensation begins |
+| An operator cancels a run mid-way | Eligible steps are withdrawn, running ones finish, then everything that completed is compensated; the run ends `CANCELLED` |
+| A compensation fails for good | The run stops at `COMPENSATION_FAILED`; after fixing the cause an operator retries it, with the earlier attempts kept |
+| The orchestrator restarts during a timer | Nothing is lost: the timer's due time is a column, and any orchestrator fires it once due |
 | A worker charges, then dies before reporting | The charge step runs again with the same idempotency key; the payment provider replays the first charge, so the customer is charged once |
 
 What it does **not** guarantee on its own: an external side effect (a charge, an email) can execute more than once if a worker dies after doing it and before reporting it. Handlers receive a stable `stepExecutionId` to use as an idempotency key with the external system; that is the only way to make such a side effect exactly-once. The demo's simulated payment provider (`flowforge-payments`) shows it working: it stores every key, answers a repeat with the original charge and `Idempotent-Replayed: true`, and its ledger proves no order is ever charged twice.
@@ -304,7 +332,7 @@ flowforge/
 - [x] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation — plus the [crash-recovery demo](docs/recovery-demo.md)
 - [x] **Phase 4 — Concurrency and correctness:** multiple workers and orchestrators on the same workload; a consistency checker, a lease-race test and a chaos stress test prove no double-claiming and no stale-message corruption — see [docs/correctness.md](docs/correctness.md)
 - [x] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits — see [deploy/README.md](deploy/README.md) and [docs/performance.md](docs/performance.md)
-- [x] **Beyond the plan:** a live, explanatory [dashboard](#dashboard); instant dispatch on commit instead of polling ([performance](docs/performance.md#instant-dispatch)); parallel steps with `dependsOn`; a simulated payment provider that proves a step run twice charges once; one OpenTelemetry trace per run, Prometheus metrics and a Grafana dashboard
+- [x] **Beyond the plan:** a live, explanatory [dashboard](#dashboard); instant dispatch on commit instead of polling ([performance](docs/performance.md#instant-dispatch)); parallel steps with `dependsOn`; a simulated payment provider that proves a step run twice charges once; one OpenTelemetry trace per run, Prometheus metrics and a Grafana dashboard; step outputs, durable timers, operator cancel/retry with an audit trail, and typed errors as RFC 9457 problem details
 
 ## License
 

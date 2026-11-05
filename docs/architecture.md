@@ -31,13 +31,23 @@ stateDiagram-v2
     RUNNING --> COMPENSATING: step failed after compensable steps completed
     COMPENSATING --> COMPENSATED: every compensation completed
     COMPENSATING --> COMPENSATION_FAILED: a compensation failed
+    COMPENSATION_FAILED --> COMPENSATING: operator retries
+    RUNNING --> CANCELLED: operator cancelled, nothing to undo
+    COMPENSATING --> CANCELLED: operator cancelled, all undone
+    CANCELLED --> [*]
     COMPLETED --> [*]
     FAILED --> [*]
     COMPENSATED --> [*]
     COMPENSATION_FAILED --> [*]
 ```
 
-When a forward step fails terminally, no new forward step starts, and steps already in flight (running, backing off, or eligible) are allowed to finish: in a parallel workflow a sibling may still succeed and then need undoing too. Once none is in flight, the run takes every `COMPLETED` step with a `compensation_type`, most recently completed first, and appends a `COMPENSATION` step execution for each. Those run sequentially through the same claim, outbox, lease and retry machinery as forward steps, with the forward step's attempt budget. `COMPENSATION_FAILED` means the system can no longer restore consistency on its own and a human has to look.
+When a forward step fails terminally, no new forward step starts, and steps already in flight (running, backing off, or eligible) are allowed to finish: in a parallel workflow a sibling may still succeed and then need undoing too. Once none is in flight, the run takes every `COMPLETED` step with a `compensation_type`, most recently completed first, and appends a `COMPENSATION` step execution for each. Those run sequentially through the same claim, outbox, lease and retry machinery as forward steps, with the forward step's attempt budget. `COMPENSATION_FAILED` means the system can no longer restore consistency on its own and a human has to look; once the cause is fixed, `POST /api/runs/{id}/retry` reopens the failed compensation with three more attempts.
+
+**Cancellation** (`POST /api/runs/{id}/cancel`) uses the same path as a failure: it sets `cancel_requested_at`, withdraws every eligible forward step, lets running ones finish, then compensates what completed. The run ends `CANCELLED` instead of `FAILED` or `COMPENSATED`. Every operator action is a row in `operator_action` (actor, reason, status before), written in the same transaction as the change. `OperatorService` locks the run's steps and then the run — the same order as every other writer — so it cannot deadlock with a result being applied.
+
+**Durable timers.** A `WAIT` step's `next_attempt_at` is set to *ready + wait* when its dependencies complete. The dispatcher claims it like any step once due, and `StepStateService.fireTimer()` completes it in the claim transaction, with no command and no worker. Because the due time is stored, a timer survives restarts and is fired by whichever orchestrator claims it first.
+
+**Step outputs.** A successful result may carry a JSON object (≤ 64 KB, else the step fails permanently), stored in `step_execution.output`. Every command carries the outputs of the run's completed forward steps, so a handler can read what an earlier step produced (`StepContext.requireOutput`).
 
 ## Step state machine (Phase 1)
 

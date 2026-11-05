@@ -1,0 +1,12 @@
+{
+  "name": "order-with-cooling-off",
+  "steps": [
+    { "name": "validate-order", "type": "VALIDATE_ORDER", "maxAttempts": 1 },
+    { "name": "reserve-inventory", "type": "RESERVE_INVENTORY", "compensateWith": "RELEASE_INVENTORY", "dependsOn": ["validate-order"] },
+    { "name": "check-fraud", "type": "CHECK_FRAUD", "dependsOn": ["validate-order"] },
+    { "name": "charge-payment", "type": "CHARGE_PAYMENT", "compensateWith": "REFUND_PAYMENT", "maxAttempts": 5, "dependsOn": ["reserve-inventory", "check-fraud"] },
+    { "name": "cooling-off", "type": "WAIT", "waitFor": "PT20S", "dependsOn": ["charge-payment"] },
+    { "name": "create-shipment", "type": "CREATE_SHIPMENT", "dependsOn": ["cooling-off"] },
+    { "name": "send-confirmation", "type": "SEND_CONFIRMATION" }
+  ]
+}

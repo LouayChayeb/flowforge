@@ -14,12 +14,12 @@ FlowForge answers it in three parts: **invariants** that define "correct", a **c
 | `single-open-attempt` | Only a `RUNNING` step has an open attempt, and it is its latest |
 | `exactly-one-success` | A `COMPLETED` step has exactly one successful attempt, its last; any other step has none |
 | `dependencies-respected` | No step was attempted or made eligible before every step it depends on completed, and no compensation ran ahead of its turn |
-| `ordered-in-time` | Each step's first attempt started only after its dependencies succeeded; a compensation's only after every forward attempt and the previous compensation finished |
+| `ordered-in-time` | Each step's first attempt started only after its dependencies succeeded (a timer's, only once its wait was over too); a compensation's only after every forward attempt and the previous compensation finished |
 | `completed-run-is-complete` | A `COMPLETED` run has every step completed and nothing compensated |
 | `finished-run-is-quiet` | A finished run has nothing running, retrying or eligible |
 | `compensation-targets` | Each compensation undoes a distinct completed step that declared that compensation |
-| `compensated-run-is-compensated` | A `COMPENSATED` run has compensations, and all of them completed |
-| `command-for-every-attempt` | Every attempt has its step command in the outbox — the claim and the command committed together |
+| `compensated-run-is-compensated` | A `COMPENSATED` run has compensations, and all of them completed; a `CANCELLED` run's compensations all completed too |
+| `command-for-every-attempt` | Every attempt has its step command in the outbox — the claim and the command committed together (timers excepted: they send none) |
 
 The same checks are available on a running system:
 

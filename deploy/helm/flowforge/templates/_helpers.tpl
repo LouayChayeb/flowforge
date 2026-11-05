@@ -49,3 +49,20 @@ app.kubernetes.io/instance: {{ $root.Release.Name }}
 {{- define "flowforge.dbSecret" -}}
 {{- default (printf "%s-db" (include "flowforge.fullname" .)) .Values.postgresql.existingSecret -}}
 {{- end -}}
+
+{{- define "flowforge.paymentsUrl" -}}
+{{- if .Values.payments.enabled -}}
+{{- printf "http://%s-payments:8084" (include "flowforge.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+
+{{/* Environment that turns tracing on and points it at the chart's Jaeger, when observability is enabled. */}}
+{{- define "flowforge.tracingEnv" -}}
+{{- if .Values.observability.enabled }}
+- name: FLOWFORGE_TRACING_ENABLED
+  value: "true"
+- name: FLOWFORGE_OTLP_ENDPOINT
+  value: {{ printf "http://%s-jaeger:4318/v1/traces" (include "flowforge.fullname" .) | quote }}
+{{- end }}
+{{- end -}}

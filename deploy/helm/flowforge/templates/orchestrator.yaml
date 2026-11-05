@@ -50,11 +50,12 @@ spec:
             # Exact property names, without relying on environment-variable name mangling.
             - name: SPRING_APPLICATION_JSON
               value: {{ dict
-                  "flowforge" (dict "engine" $o.engine "kafka" (dict "partitions" .Values.kafka.partitions))
+                  "flowforge" (dict "engine" $o.engine "kafka" (dict "partitions" .Values.kafka.partitions) "insight" (dict "payments-url" (include "flowforge.paymentsUrl" .) "trace-url" (ternary .Values.observability.traceUrl "" .Values.observability.enabled)))
                   "spring" (dict
                     "kafka" (dict "listener" (dict "concurrency" $o.listenerConcurrency))
                     "datasource" (dict "hikari" (dict "maximum-pool-size" $o.dbPoolSize)))
                 | toJson | quote }}
+            {{- include "flowforge.tracingEnv" . | nindent 12 }}
             {{- with $o.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -37,9 +37,10 @@ spec:
               value: {{ dict
                   "flowforge" (dict
                     "kafka" (dict "partitions" .Values.kafka.partitions)
-                    "worker" (dict "simulated-latency" $w.simulatedLatency))
+                    "worker" (dict "simulated-latency" $w.simulatedLatency "payments-url" (include "flowforge.paymentsUrl" .)))
                   "spring" (dict "kafka" (dict "listener" (dict "concurrency" $w.listenerConcurrency)))
                 | toJson | quote }}
+            {{- include "flowforge.tracingEnv" . | nindent 12 }}
             {{- with $w.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

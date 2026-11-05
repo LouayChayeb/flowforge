@@ -1,0 +1,233 @@
+{{- if .Values.observability.enabled }}
+{{- $fn := include "flowforge.fullname" . -}}
+{{- $obs := .Values.observability -}}
+# Headless services: Prometheus resolves them to every pod, so each orchestrator and worker replica is scraped.
+{{- range $component, $port := dict "orchestrator" 8080 "worker" 8081 "payments" 8084 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-{{ $component }}-metrics
+  labels:
+    {{- include "flowforge.labels" $ | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "flowforge.selector" (list $ $component) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fn }}-prometheus
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+      - job_name: flowforge
+        metrics_path: /actuator/prometheus
+        dns_sd_configs:
+          - names:
+              - {{ $fn }}-orchestrator-metrics.{{ .Release.Namespace }}.svc.cluster.local
+            type: A
+            port: 8080
+          - names:
+              - {{ $fn }}-worker-metrics.{{ .Release.Namespace }}.svc.cluster.local
+            type: A
+            port: 8081
+          - names:
+              - {{ $fn }}-payments-metrics.{{ .Release.Namespace }}.svc.cluster.local
+            type: A
+            port: 8084
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-prometheus
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+    {{- include "flowforge.selector" (list . "prometheus") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "flowforge.selector" (list . "prometheus") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flowforge.labels" . | nindent 8 }}
+        {{- include "flowforge.selector" (list . "prometheus") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: prometheus
+          image: {{ $obs.prometheusImage }}
+          args: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+          ports:
+            - { name: http, containerPort: 9090 }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fn }}-prometheus
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-prometheus
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "flowforge.selector" (list . "prometheus") | nindent 4 }}
+  ports:
+    - { name: http, port: 9090, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-jaeger
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+    {{- include "flowforge.selector" (list . "jaeger") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "flowforge.selector" (list . "jaeger") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flowforge.labels" . | nindent 8 }}
+        {{- include "flowforge.selector" (list . "jaeger") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: jaeger
+          # All-in-one with in-memory storage: fine for a demo cluster, traces are lost on restart.
+          image: {{ $obs.jaegerImage }}
+          ports:
+            - { name: ui, containerPort: 16686 }
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: otlp-http, containerPort: 4318 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-jaeger
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "flowforge.selector" (list . "jaeger") | nindent 4 }}
+  ports:
+    - { name: ui, port: 16686, targetPort: ui }
+    - { name: otlp-grpc, port: 4317, targetPort: otlp-grpc }
+    - { name: otlp-http, port: 4318, targetPort: otlp-http }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fn }}-grafana
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+data:
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ $fn }}-prometheus:9090
+        isDefault: true
+      - name: Jaeger
+        uid: jaeger
+        type: jaeger
+        access: proxy
+        url: http://{{ $fn }}-jaeger:16686
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+      - name: flowforge
+        folder: FlowForge
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+  flowforge.json: |
+{{ .Files.Get "files/grafana/flowforge.json" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-grafana
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+    {{- include "flowforge.selector" (list . "grafana") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "flowforge.selector" (list . "grafana") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flowforge.labels" . | nindent 8 }}
+        {{- include "flowforge.selector" (list . "grafana") | nindent 8 }}
+      annotations:
+        # Restart Grafana when the dashboard changes.
+        checksum/dashboards: {{ .Files.Get "files/grafana/flowforge.json" | sha256sum }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: grafana
+          image: {{ $obs.grafanaImage }}
+          env:
+            # Anonymous admin: this is a demo cluster. Do not expose it.
+            - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "true" }
+            - { name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Admin }
+            - { name: GF_AUTH_DISABLE_LOGIN_FORM, value: "true" }
+            - { name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: /var/lib/grafana/dashboards/flowforge.json }
+          ports:
+            - { name: http, containerPort: 3000 }
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/grafana/provisioning/datasources/datasources.yml, subPath: datasources.yml }
+            - { name: config, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yml, subPath: dashboards.yml }
+            - { name: config, mountPath: /var/lib/grafana/dashboards/flowforge.json, subPath: flowforge.json }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fn }}-grafana
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-grafana
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "flowforge.selector" (list . "grafana") | nindent 4 }}
+  ports:
+    - { name: http, port: 3000, targetPort: http }
+{{- end }}

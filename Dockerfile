@@ -3,6 +3,7 @@
 # One Dockerfile for both services. Pick the service with MODULE:
 #   docker build --build-arg MODULE=flowforge-orchestrator -t flowforge-orchestrator .
 #   docker build --build-arg MODULE=flowforge-worker       -t flowforge-worker .
+#   docker build --build-arg MODULE=flowforge-payments     -t flowforge-payments .
 #
 # Tests are not run here; CI runs them against real containers before images are built.
 
@@ -16,6 +17,7 @@ COPY mvnw pom.xml ./
 COPY flowforge-common/ flowforge-common/
 COPY flowforge-orchestrator/ flowforge-orchestrator/
 COPY flowforge-worker/ flowforge-worker/
+COPY flowforge-payments/ flowforge-payments/
 # The Maven repository is cached between builds, so only changed code is recompiled.
 RUN --mount=type=cache,target=/root/.m2 \
     test -n "$MODULE" || (echo "Set --build-arg MODULE" >&2; exit 1); \

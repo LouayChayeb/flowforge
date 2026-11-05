@@ -15,6 +15,10 @@ orchestrator:
   engine:
     batch-size: 10
     lease-duration: 60s
+    # Run the loops as soon as work appears, not only on their ticks (the ticks stay as a safety net).
+    wakeup: true
+    # A wake-up waits this long so work appearing close together shares one batch (see docs/performance.md).
+    wakeup-linger: 20ms
     scheduler:
       dispatch-interval-ms: 500
       outbox-interval-ms: 200
@@ -47,6 +51,26 @@ worker:
   resources:
     requests: { cpu: 100m, memory: 384Mi }
     limits: { memory: 640Mi }
+
+# The simulated payment provider: remembers idempotency keys, so a charge step that runs twice charges once.
+# Disable to let workers simulate payments in memory instead.
+payments:
+  enabled: true
+  image: flowforge-payments
+  replicas: 1
+  extraEnv: []
+  resources:
+    requests: { cpu: 100m, memory: 320Mi }
+    limits: { memory: 512Mi }
+
+# Traces (Jaeger), metrics (Prometheus) and a ready-made Grafana dashboard. Turns tracing on in every service.
+observability:
+  enabled: false
+  jaegerImage: jaegertracing/jaeger:2.4.0
+  prometheusImage: prom/prometheus:v3.2.1
+  grafanaImage: grafana/grafana:11.5.2
+  # Where the dashboard's "open trace" links point; {traceId} is replaced. Matches a port-forward of the Jaeger UI.
+  traceUrl: "http://localhost:16686/trace/{traceId}"
 
 # A single-node Kafka (KRaft) for development clusters. Set enabled: false and externalBootstrap to use your own.
 kafka:

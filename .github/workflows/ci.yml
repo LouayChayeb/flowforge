@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [flowforge-orchestrator, flowforge-worker]
+        module: [flowforge-orchestrator, flowforge-worker, flowforge-payments]
     steps:
       - uses: actions/checkout@v4
 

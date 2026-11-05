@@ -1,0 +1,15 @@
+# Prometheus for docker compose: the services run on the host (java -jar or mvnw), so scrape them through
+# host.docker.internal. Targets that are not running simply show as down.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: flowforge
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8085   # orchestrator (8080 is often taken; see the README)
+          - host.docker.internal:8080   # orchestrator on its default port
+          - host.docker.internal:8081   # worker
+          - host.docker.internal:8082   # second worker
+          - host.docker.internal:8084   # payment provider

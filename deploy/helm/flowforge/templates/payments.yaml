@@ -1,0 +1,80 @@
+{{- if .Values.payments.enabled }}
+{{- $name := printf "%s-payments" (include "flowforge.fullname" .) -}}
+{{- $p := .Values.payments -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+    {{- include "flowforge.selector" (list . "payments") | nindent 4 }}
+spec:
+  replicas: {{ $p.replicas }}
+  selector:
+    matchLabels:
+      {{- include "flowforge.selector" (list . "payments") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flowforge.labels" . | nindent 8 }}
+        {{- include "flowforge.selector" (list . "payments") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.postgresql.enabled }}
+      initContainers:
+        - name: wait-for-postgresql
+          image: {{ .Values.postgresql.image }}
+          command: ["sh", "-c", "until pg_isready -h {{ include "flowforge.fullname" . }}-postgresql -p 5432; do sleep 2; done"]
+      {{- end }}
+      containers:
+        - name: payments
+          image: {{ include "flowforge.image" (list . $p.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8084
+          env:
+            # The simulated provider keeps its ledger in its own schema of the same database.
+            - name: FLOWFORGE_PAYMENTS_DB_URL
+              value: {{ include "flowforge.dbUrl" . | quote }}
+            - name: FLOWFORGE_PAYMENTS_DB_USER
+              value: {{ .Values.postgresql.username | quote }}
+            - name: FLOWFORGE_PAYMENTS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flowforge.dbSecret" . }}
+                  key: password
+            {{- include "flowforge.tracingEnv" . | nindent 12 }}
+            {{- with $p.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flowforge.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "flowforge.selector" (list . "payments") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8084
+      targetPort: http
+{{- end }}

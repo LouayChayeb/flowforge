@@ -1,0 +1,113 @@
+{
+  "uid": "flowforge",
+  "title": "FlowForge",
+  "description": "Throughput, latency and the health of every stage of the engine. Gauges come from the database and are the same on every orchestrator, so they use max(); counters and timers are summed across instances.",
+  "tags": ["flowforge"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    { "type": "row", "title": "Runs", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "type": "timeseries", "title": "Runs finished per second, by status",
+      "description": "flowforge.run.duration count. Compensated runs are failures handled cleanly; COMPENSATION_FAILED needs a human.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 15, "stacking": { "mode": "normal" } } } },
+      "targets": [ { "refId": "A", "expr": "sum by (status) (rate(flowforge_run_duration_seconds_count[1m]))", "legendFormat": "{{status}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Run latency (start → finished)",
+      "description": "Percentiles from the flowforge.run.duration histogram, all workflows.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(flowforge_run_duration_seconds_bucket[1m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(flowforge_run_duration_seconds_bucket[1m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(flowforge_run_duration_seconds_bucket[1m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Work in progress",
+      "description": "Read from the database: runs not finished, attempts with a worker, steps ready or backing off, commands not yet sent to Kafka.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "max(flowforge_runs_active)", "legendFormat": "active runs" },
+        { "refId": "B", "expr": "max(flowforge_steps_leased)", "legendFormat": "leased attempts" },
+        { "refId": "C", "expr": "max(flowforge_steps_waiting)", "legendFormat": "waiting steps" },
+        { "refId": "D", "expr": "max(flowforge_outbox_pending)", "legendFormat": "outbox pending" }
+      ]
+    },
+    { "type": "row", "title": "The step loop", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 } },
+    {
+      "type": "timeseries", "title": "Claimed → published → applied (per second)",
+      "description": "In steady state the three lines coincide. A gap between claimed and published means the outbox is behind; between published and applied, the workers or the result listener.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(flowforge_steps_claimed_total[1m]))", "legendFormat": "claimed" },
+        { "refId": "B", "expr": "sum(rate(flowforge_outbox_published_total[1m]))", "legendFormat": "published" },
+        { "refId": "C", "expr": "sum(rate(flowforge_results_total{result=\"applied\"}[1m]))", "legendFormat": "applied" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Failure handling at work (per second)",
+      "description": "Stale results are duplicates or late answers that were safely rejected; expired leases are attempts presumed lost and retried; publish failures are retried on the next pass.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(flowforge_results_total{result=\"stale\"}[1m]))", "legendFormat": "stale results rejected" },
+        { "refId": "B", "expr": "sum(rate(flowforge_leases_expired_total[1m]))", "legendFormat": "leases expired" },
+        { "refId": "C", "expr": "sum(rate(flowforge_outbox_failures_total[1m]))", "legendFormat": "publish failures" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Step attempts per second, by outcome",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 15, "stacking": { "mode": "normal" } } } },
+      "targets": [ { "refId": "A", "expr": "sum by (outcome) (rate(flowforge_step_attempt_duration_seconds_count[1m]))", "legendFormat": "{{outcome}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Attempt latency p95 (claim → outcome), by step type",
+      "description": "Includes the time a command waits in Kafka and the worker's execution.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, type) (rate(flowforge_step_attempt_duration_seconds_bucket[1m])))", "legendFormat": "{{type}}" } ]
+    },
+    { "type": "row", "title": "Kafka, payments and resources", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 } },
+    {
+      "type": "timeseries", "title": "Consumer lag (max per application)",
+      "description": "Records not yet consumed. Workers falling behind shows on the worker line; the result listener on the orchestrator line.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 27 },
+      "targets": [ { "refId": "A", "expr": "max by (application) (kafka_consumer_fetch_manager_records_lag_max)", "legendFormat": "{{application}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Payment provider requests (per second)",
+      "description": "replayed = a request that repeated an idempotency key: the provider answered with the original result and charged nothing. This is a step that ran twice and charged once.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 27 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [ { "refId": "A", "expr": "sum by (operation, result) (rate(flowforge_payments_requests_total[1m]))", "legendFormat": "{{operation}} {{result}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "CPU by application",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 27 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "targets": [ { "refId": "A", "expr": "sum by (application) (process_cpu_usage)", "legendFormat": "{{application}}" } ]
+    }
+  ]
+}

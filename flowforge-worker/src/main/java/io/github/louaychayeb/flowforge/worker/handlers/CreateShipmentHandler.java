@@ -1,11 +1,14 @@
 package io.github.louaychayeb.flowforge.worker.handlers;
 
 import io.github.louaychayeb.flowforge.common.step.StepContext;
+import io.github.louaychayeb.flowforge.common.step.StepFailureException;
 import io.github.louaychayeb.flowforge.common.step.StepHandler;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+
+import java.util.Map;
 
 /**
  * Simulated shipment request. Orders shipped to country {@value #UNSUPPORTED_COUNTRY} are rejected, a
@@ -42,18 +45,19 @@ public class CreateShipmentHandler implements StepHandler {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return StepHandlerResult.retryableFailure("Interrupted while waiting for the carrier");
+                throw new StepFailureException.Retryable("Interrupted while waiting for the carrier", e);
             }
         }
         if (context.attempt() <= asLong(context.input().get("shipmentFailures"))) {
-            return StepHandlerResult.retryableFailure("Carrier API timed out (attempt " + context.attempt() + ")");
+            throw new StepFailureException.Retryable("Carrier API timed out (attempt " + context.attempt() + ")");
         }
         if (UNSUPPORTED_COUNTRY.equals(context.input().get("country"))) {
-            return StepHandlerResult.permanentFailure("Cannot ship order " + order.orderId() + " to country "
+            throw new StepFailureException.Permanent("Cannot ship order " + order.orderId() + " to country "
                     + UNSUPPORTED_COUNTRY);
         }
-        log.info("Requested shipment for order {}", order.orderId());
-        return StepHandlerResult.succeeded();
+        String trackingNumber = "TRK" + context.stepExecutionId().toString().substring(0, 8).toUpperCase();
+        log.info("Requested shipment for order {} (tracking {})", order.requireOrderId(), trackingNumber);
+        return StepHandlerResult.succeeded(Map.of("trackingNumber", trackingNumber));
     }
 
     private static long asLong(Object value) {

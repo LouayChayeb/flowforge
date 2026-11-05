@@ -15,7 +15,8 @@ import java.util.UUID;
 /**
  * Turns a {@link StepCommand} into a {@link StepResult} by running the matching {@link StepHandler}.
  * Everything a handler does, including throwing, becomes a result: an unknown step type is a permanent
- * failure, an exception or a missing result is retryable.
+ * failure; a {@link StepFailureException} keeps the classification it carries; any other exception, or a missing
+ * result, is retryable — and logged, since it means the handler did not expect it.
  *
  * <p>A command received after its {@link StepCommand#deadline() deadline} is skipped: the orchestrator has
  * already timed that attempt out (or is about to) and will send a new one, so executing it would only add
@@ -24,6 +25,8 @@ import java.util.UUID;
  * <p>Transport-agnostic, so the worker's Kafka listener and in-test workers share the same behaviour.
  */
 public class StepCommandProcessor {
+
+    private static final System.Logger LOG = System.getLogger(StepCommandProcessor.class.getName());
 
     private final Map<String, StepHandler> handlers = new HashMap<>();
     private final Clock clock;
@@ -48,7 +51,7 @@ public class StepCommandProcessor {
         }
         StepHandlerResult result = execute(command);
         return Optional.of(new StepResult(UUID.randomUUID(), command.runId(), command.stepExecutionId(),
-                command.attempt(), result.outcome(), result.errorMessage()));
+                command.attempt(), result.outcome(), result.errorMessage(), result.output()));
     }
 
     public boolean isExpired(StepCommand command) {
@@ -66,11 +69,17 @@ public class StepCommandProcessor {
         }
         StepContext context = new StepContext(command.runId(), command.stepExecutionId(), command.stepName(),
                 command.attempt(), command.input() == null ? Map.of() : command.input(),
-                command.compensatesStepExecutionId());
+                command.compensatesStepExecutionId(), command.outputs());
         try {
             StepHandlerResult result = handler.execute(context);
             return result != null ? result : StepHandlerResult.retryableFailure("Handler returned no result");
+        } catch (StepFailureException e) {
+            // A failure the handler classified on purpose: report it as such, no stack trace needed.
+            return e.isRetryable() ? StepHandlerResult.retryableFailure(e.getMessage())
+                    : StepHandlerResult.permanentFailure(e.getMessage());
         } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Unexpected exception in handler for " + command.stepType()
+                    + " (step " + command.stepName() + ", attempt " + command.attempt() + "); retrying", e);
             return StepHandlerResult.retryableFailure(e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }

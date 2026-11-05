@@ -1,11 +1,14 @@
 package io.github.louaychayeb.flowforge.worker.handlers;
 
 import io.github.louaychayeb.flowforge.common.step.StepContext;
+import io.github.louaychayeb.flowforge.common.step.StepFailureException;
 import io.github.louaychayeb.flowforge.common.step.StepHandler;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+
+import java.util.Map;
 
 /**
  * Simulated fraud screening. In the order workflow it runs in parallel with the inventory reservation: both only
@@ -36,14 +39,14 @@ public class CheckFraudHandler implements StepHandler {
                 Thread.sleep(Math.min(millis.longValue(), MAX_DELAY_MS));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return StepHandlerResult.retryableFailure("Interrupted during the fraud check");
+                throw new StepFailureException.Retryable("Interrupted during the fraud check", e);
             }
         }
         Object fraud = context.input().get("fraud");
         if (Boolean.TRUE.equals(fraud) || "true".equals(fraud)) {
-            return StepHandlerResult.permanentFailure("Order " + order.orderId() + " flagged as fraudulent");
+            throw new StepFailureException.Permanent("Order " + order.orderId() + " flagged as fraudulent");
         }
         log.info("Fraud check passed for order {}", order.orderId());
-        return StepHandlerResult.succeeded();
+        return StepHandlerResult.succeeded(Map.of("riskScore", 0.07));
     }
 }

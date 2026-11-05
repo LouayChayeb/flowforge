@@ -21,6 +21,8 @@ import java.util.UUID;
  * @param compensatesStepExecutionId for a compensation step, the id of the step it undoes — the idempotency
  *                                   key of the original side effect, e.g. the charge to refund. Otherwise
  *                                   {@code null}
+ * @param outputs                    the output of every step of the run completed so far, by step name, for
+ *                                   handlers that need what an earlier step produced
  */
 public record StepCommand(
         UUID eventId,
@@ -31,11 +33,22 @@ public record StepCommand(
         int attempt,
         Map<String, Object> input,
         Instant deadline,
-        UUID compensatesStepExecutionId
+        UUID compensatesStepExecutionId,
+        Map<String, Map<String, Object>> outputs
 ) {
+
+    public StepCommand {
+        outputs = outputs == null ? Map.of() : outputs;
+    }
+
+    public StepCommand(UUID eventId, UUID runId, UUID stepExecutionId, String stepName, String stepType, int attempt,
+                       Map<String, Object> input, Instant deadline, UUID compensatesStepExecutionId) {
+        this(eventId, runId, stepExecutionId, stepName, stepType, attempt, input, deadline, compensatesStepExecutionId,
+                Map.of());
+    }
 
     public StepCommand(UUID eventId, UUID runId, UUID stepExecutionId, String stepName, String stepType, int attempt,
                        Map<String, Object> input, Instant deadline) {
-        this(eventId, runId, stepExecutionId, stepName, stepType, attempt, input, deadline, null);
+        this(eventId, runId, stepExecutionId, stepName, stepType, attempt, input, deadline, null, Map.of());
     }
 }

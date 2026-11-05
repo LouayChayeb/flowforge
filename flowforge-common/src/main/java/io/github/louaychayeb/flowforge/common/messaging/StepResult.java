@@ -1,5 +1,6 @@
 package io.github.louaychayeb.flowforge.common.messaging;
 
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -11,6 +12,7 @@ import java.util.UUID;
  * @param attempt          the attempt this result answers
  * @param outcome          what happened
  * @param errorMessage     failure details, {@code null} on success
+ * @param output           data the step produced for later steps; empty unless it succeeded
  */
 public record StepResult(
         UUID eventId,
@@ -18,6 +20,16 @@ public record StepResult(
         UUID stepExecutionId,
         int attempt,
         StepOutcome outcome,
-        String errorMessage
+        String errorMessage,
+        Map<String, Object> output
 ) {
+
+    public StepResult {
+        output = output == null ? Map.of() : output;
+    }
+
+    public StepResult(UUID eventId, UUID runId, UUID stepExecutionId, int attempt, StepOutcome outcome,
+                      String errorMessage) {
+        this(eventId, runId, stepExecutionId, attempt, outcome, errorMessage, Map.of());
+    }
 }

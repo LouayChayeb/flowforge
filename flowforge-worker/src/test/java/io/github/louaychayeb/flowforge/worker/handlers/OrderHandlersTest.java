@@ -2,6 +2,8 @@ package io.github.louaychayeb.flowforge.worker.handlers;
 
 import io.github.louaychayeb.flowforge.common.messaging.StepOutcome;
 import io.github.louaychayeb.flowforge.common.step.StepContext;
+import io.github.louaychayeb.flowforge.common.step.StepFailureException;
+import io.github.louaychayeb.flowforge.common.step.StepHandler;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
 import io.github.louaychayeb.flowforge.worker.payments.SimulatedPaymentGateway;
 import org.junit.jupiter.api.Test;
@@ -12,68 +14,79 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class OrderHandlersTest {
-
-    private final SimulatedPaymentGateway payments = new SimulatedPaymentGateway(new BigDecimal("10000"));
 
     private static final Map<String, Object> VALID_ORDER = Map.of(
             "orderId", "ORD-1042", "customerId", "CUS-91", "amount", 249.90);
 
+    private final SimulatedPaymentGateway payments = new SimulatedPaymentGateway(new BigDecimal("10000"));
+
     @Test
     void validatesCompleteOrders() {
-        assertThat(new ValidateOrderHandler().execute(context(VALID_ORDER)).outcome())
-                .isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(outcome(new ValidateOrderHandler(), context(VALID_ORDER))).isEqualTo(StepOutcome.SUCCEEDED);
     }
 
     @Test
-    void rejectsOrdersWithMissingFieldsPermanently() {
+    void rejectsOrdersWithMissingFieldsAsInvalidInput() {
         Map<String, Object> missingCustomer = new HashMap<>(VALID_ORDER);
         missingCustomer.remove("customerId");
 
-        StepHandlerResult result = new ValidateOrderHandler().execute(context(missingCustomer));
-
-        assertThat(result.outcome()).isEqualTo(StepOutcome.PERMANENT_FAILURE);
-        assertThat(result.errorMessage()).isEqualTo("customerId is required");
+        assertThatThrownBy(() -> new ValidateOrderHandler().execute(context(missingCustomer)))
+                .isInstanceOf(StepFailureException.InvalidInput.class)
+                .hasMessage("customerId is required");
     }
 
     @Test
-    void rejectsNonPositiveAmounts() {
+    void rejectsNonPositiveAndNonNumericAmounts() {
         Map<String, Object> free = new HashMap<>(VALID_ORDER);
         free.put("amount", 0);
+        Map<String, Object> text = new HashMap<>(VALID_ORDER);
+        text.put("amount", "lots");
 
-        assertThat(new ValidateOrderHandler().execute(context(free)).outcome())
-                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+        assertThat(outcome(new ValidateOrderHandler(), context(free))).isEqualTo(StepOutcome.PERMANENT_FAILURE);
+        assertThatThrownBy(() -> new ValidateOrderHandler().execute(context(text)))
+                .isInstanceOf(StepFailureException.InvalidInput.class)
+                .hasMessageContaining("not a number");
     }
 
     @Test
-    void declinesLargePayments() {
+    void chargesProduceTheProvidersChargeIdAndDeclinesArePermanent() {
         Map<String, Object> large = new HashMap<>(VALID_ORDER);
         large.put("amount", 10_000.01);
+        ChargePaymentHandler charge = new ChargePaymentHandler(payments);
 
-        assertThat(new ChargePaymentHandler(payments).execute(context(VALID_ORDER)).outcome())
-                .isEqualTo(StepOutcome.SUCCEEDED);
-        assertThat(new ChargePaymentHandler(payments).execute(context(large)).outcome())
-                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+        StepHandlerResult ok = charge.execute(context(VALID_ORDER));
+        assertThat(ok.outcome()).isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(ok.output()).containsKey("chargeId");
+        assertThatThrownBy(() -> charge.execute(context(large)))
+                .isInstanceOf(StepFailureException.Permanent.class)
+                .hasMessageContaining("declined");
     }
 
     @Test
-    void refusesShipmentsToUnsupportedCountries() {
+    void aChargeThatRunsTwiceChargesOnce() {
+        ChargePaymentHandler charge = new ChargePaymentHandler(payments);
+        StepContext sameStep = context(VALID_ORDER);
+
+        StepHandlerResult first = charge.execute(sameStep);
+        // Redelivered after a crash: same step execution id, so the same idempotency key.
+        StepHandlerResult second = charge.execute(sameStep);
+
+        assertThat(second.output()).isEqualTo(first.output());
+        assertThat(payments.charge(sameStep.stepExecutionId().toString(), "ORD-1042", new BigDecimal("249.90")).replayed())
+                .as("the provider has seen this key before").isTrue();
+    }
+
+    @Test
+    void shipmentsProduceATrackingNumberAndRefuseUnsupportedCountries() {
         Map<String, Object> nowhere = new HashMap<>(VALID_ORDER);
         nowhere.put("country", "XX");
 
-        assertThat(new CreateShipmentHandler().execute(context(VALID_ORDER)).outcome())
-                .isEqualTo(StepOutcome.SUCCEEDED);
-        assertThat(new CreateShipmentHandler().execute(context(nowhere)).outcome())
-                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
-    }
-
-    @Test
-    void compensationsSucceed() {
-        assertThat(new ReleaseInventoryHandler().execute(context(VALID_ORDER)).outcome())
-                .isEqualTo(StepOutcome.SUCCEEDED);
-        assertThat(new RefundPaymentHandler(payments).execute(undo(VALID_ORDER)).outcome())
-                .isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(new CreateShipmentHandler().execute(context(VALID_ORDER)).output()).containsKey("trackingNumber");
+        assertThatThrownBy(() -> new CreateShipmentHandler().execute(context(nowhere)))
+                .isInstanceOf(StepFailureException.Permanent.class);
     }
 
     @Test
@@ -82,11 +95,30 @@ class OrderHandlersTest {
         flaky.put("shipmentFailures", 2);
         CreateShipmentHandler handler = new CreateShipmentHandler();
 
-        StepHandlerResult first = handler.execute(context(flaky, 1));
-        assertThat(first.outcome()).isEqualTo(StepOutcome.RETRYABLE_FAILURE);
-        assertThat(first.errorMessage()).isEqualTo("Carrier API timed out (attempt 1)");
-        assertThat(handler.execute(context(flaky, 2)).outcome()).isEqualTo(StepOutcome.RETRYABLE_FAILURE);
-        assertThat(handler.execute(context(flaky, 3)).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
+        assertThatThrownBy(() -> handler.execute(context(flaky, 1)))
+                .isInstanceOf(StepFailureException.Retryable.class)
+                .hasMessage("Carrier API timed out (attempt 1)");
+        assertThat(outcome(handler, context(flaky, 2))).isEqualTo(StepOutcome.RETRYABLE_FAILURE);
+        assertThat(outcome(handler, context(flaky, 3))).isEqualTo(StepOutcome.SUCCEEDED);
+    }
+
+    @Test
+    void theConfirmationUsesTheOutputsOfEarlierSteps() {
+        StepContext withTracking = new StepContext(UUID.randomUUID(), UUID.randomUUID(), "send-confirmation", 1,
+                VALID_ORDER, null, Map.of("create-shipment", Map.of("trackingNumber", "TRK1"),
+                "charge-payment", Map.of("chargeId", "ch_1")));
+
+        assertThat(outcome(new SendConfirmationHandler(), withTracking)).isEqualTo(StepOutcome.SUCCEEDED);
+        assertThatThrownBy(() -> new SendConfirmationHandler().execute(context(VALID_ORDER)))
+                .as("without the shipment's output the workflow is wired wrongly")
+                .isInstanceOf(StepFailureException.Permanent.class)
+                .hasMessageContaining("trackingNumber");
+    }
+
+    @Test
+    void compensationsSucceed() {
+        assertThat(outcome(new ReleaseInventoryHandler(), context(VALID_ORDER))).isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(outcome(new RefundPaymentHandler(payments), undo(VALID_ORDER))).isEqualTo(StepOutcome.SUCCEEDED);
     }
 
     @Test
@@ -94,25 +126,12 @@ class OrderHandlersTest {
         Map<String, Object> stuck = new HashMap<>(VALID_ORDER);
         stuck.put("refundFails", true);
 
-        assertThat(new RefundPaymentHandler(payments).execute(context(stuck)).outcome())
-                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
-    }
-
-    @Test
-    void aChargeThatRunsTwiceChargesOnce() {
-        ChargePaymentHandler charge = new ChargePaymentHandler(payments);
-        StepContext sameStep = context(VALID_ORDER);
-
-        assertThat(charge.execute(sameStep).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
-        // Redelivered after a crash: same step execution id, so the same idempotency key.
-        assertThat(charge.execute(sameStep).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
-        assertThat(payments.charge(sameStep.stepExecutionId().toString(), "ORD-1042", new BigDecimal("249.90")).replayed())
-                .as("the provider has seen this key before").isTrue();
+        assertThat(outcome(new RefundPaymentHandler(payments), undo(stuck))).isEqualTo(StepOutcome.PERMANENT_FAILURE);
     }
 
     @Test
     void aRefundWithoutAChargeReferenceFailsPermanently() {
-        assertThat(new RefundPaymentHandler(payments).execute(context(VALID_ORDER)).outcome())
+        assertThat(outcome(new RefundPaymentHandler(payments), context(VALID_ORDER)))
                 .isEqualTo(StepOutcome.PERMANENT_FAILURE);
     }
 
@@ -121,9 +140,17 @@ class OrderHandlersTest {
         Map<String, Object> flagged = new HashMap<>(VALID_ORDER);
         flagged.put("fraud", true);
 
-        assertThat(new CheckFraudHandler().execute(context(VALID_ORDER)).outcome()).isEqualTo(StepOutcome.SUCCEEDED);
-        assertThat(new CheckFraudHandler().execute(context(flagged)).outcome())
-                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+        assertThat(outcome(new CheckFraudHandler(), context(VALID_ORDER))).isEqualTo(StepOutcome.SUCCEEDED);
+        assertThat(outcome(new CheckFraudHandler(), context(flagged))).isEqualTo(StepOutcome.PERMANENT_FAILURE);
+    }
+
+    /** What the worker would report: a returned result, or the classification of a thrown StepFailureException. */
+    private static StepOutcome outcome(StepHandler handler, StepContext context) {
+        try {
+            return handler.execute(context).outcome();
+        } catch (StepFailureException e) {
+            return e.isRetryable() ? StepOutcome.RETRYABLE_FAILURE : StepOutcome.PERMANENT_FAILURE;
+        }
     }
 
     private static StepContext undo(Map<String, Object> input) {

@@ -23,13 +23,13 @@ public class SimulatedPaymentGateway implements PaymentGateway {
     public Result charge(String idempotencyKey, String orderId, BigDecimal amount) {
         Result previous = charges.get(idempotencyKey);
         if (previous != null) {
-            return new Result(previous.status(), true, previous.message());
+            return new Result(previous.status(), true, previous.message(), previous.reference());
         }
         Result result = amount.compareTo(declineAbove) > 0
                 ? new Result(Status.REJECTED, false, "Payment declined: amount exceeds the card limit of " + declineAbove)
-                : new Result(Status.OK, false, "captured");
+                : new Result(Status.OK, false, "captured", "sim_" + idempotencyKey.substring(0, 8));
         Result raced = charges.putIfAbsent(idempotencyKey, result);
-        return raced == null ? result : new Result(raced.status(), true, raced.message());
+        return raced == null ? result : new Result(raced.status(), true, raced.message(), raced.reference());
     }
 
     @Override

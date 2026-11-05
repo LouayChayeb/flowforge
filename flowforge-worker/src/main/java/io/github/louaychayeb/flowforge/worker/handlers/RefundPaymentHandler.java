@@ -1,6 +1,7 @@
 package io.github.louaychayeb.flowforge.worker.handlers;
 
 import io.github.louaychayeb.flowforge.common.step.StepContext;
+import io.github.louaychayeb.flowforge.common.step.StepFailureException;
 import io.github.louaychayeb.flowforge.common.step.StepHandler;
 import io.github.louaychayeb.flowforge.common.step.StepHandlerResult;
 import io.github.louaychayeb.flowforge.worker.payments.PaymentGateway;
@@ -37,11 +38,11 @@ public class RefundPaymentHandler implements StepHandler {
         OrderInput order = OrderInput.from(context.input());
         Object fails = context.input().get("refundFails");
         if (Boolean.TRUE.equals(fails) || "true".equals(fails)) {
-            return StepHandlerResult.permanentFailure("Refund rejected by the payment provider for order "
+            throw new StepFailureException.Permanent("Refund rejected by the payment provider for order "
                     + order.orderId());
         }
         if (context.compensatesStepExecutionId() == null) {
-            return StepHandlerResult.permanentFailure("No charge to refund: the command does not say which step it undoes");
+            throw new StepFailureException.Permanent("No charge to refund: the command does not say which step it undoes");
         }
         String chargeKey = context.compensatesStepExecutionId().toString();
         PaymentGateway.Result result = payments.refund(context.stepExecutionId().toString(), chargeKey);
@@ -51,8 +52,8 @@ public class RefundPaymentHandler implements StepHandler {
                         result.replayed() ? " — already refunded, provider replayed it" : "");
                 yield StepHandlerResult.succeeded();
             }
-            case REJECTED -> StepHandlerResult.permanentFailure(result.message());
-            case UNAVAILABLE -> StepHandlerResult.retryableFailure(result.message());
+            case REJECTED -> throw new StepFailureException.Permanent(result.message());
+            case UNAVAILABLE -> throw new StepFailureException.Retryable(result.message());
         };
     }
 }

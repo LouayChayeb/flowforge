@@ -8,10 +8,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Compensation for {@link ReserveInventoryHandler}: releases the simulated reservation.
+ * Compensation for {@link ReserveInventoryHandler}: releases the reservation that step reported in its output.
  */
 @Component
 public class ReleaseInventoryHandler implements StepHandler {
+
+    static final String RESERVE_STEP = "reserve-inventory";
 
     private static final Logger log = LoggerFactory.getLogger(ReleaseInventoryHandler.class);
 
@@ -22,8 +24,10 @@ public class ReleaseInventoryHandler implements StepHandler {
 
     @Override
     public StepHandlerResult execute(StepContext context) {
-        OrderInput order = OrderInput.from(context.input());
-        log.info("Released inventory reservation for order {}", order.orderId());
+        String orderId = OrderInput.from(context.input()).requireOrderId();
+        // Older runs reserved without reporting an id; releasing by order is still correct for them.
+        Object reservationId = context.outputOf(RESERVE_STEP).getOrDefault("reservationId", "order " + orderId);
+        log.info("Released inventory reservation {} for order {}", reservationId, orderId);
         return StepHandlerResult.succeeded();
     }
 }

@@ -7,8 +7,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
+
 /**
- * Simulated inventory reservation.
+ * Simulated inventory reservation. Outputs the {@code reservationId}, which {@link ReleaseInventoryHandler} needs to
+ * undo it. Derived from the step execution id, so a repeated attempt yields the same reservation.
  */
 @Component
 public class ReserveInventoryHandler implements StepHandler {
@@ -22,8 +25,9 @@ public class ReserveInventoryHandler implements StepHandler {
 
     @Override
     public StepHandlerResult execute(StepContext context) {
-        OrderInput order = OrderInput.from(context.input());
-        log.info("Reserved inventory for order {} (reservation key {})", order.orderId(), context.stepExecutionId());
-        return StepHandlerResult.succeeded();
+        String orderId = OrderInput.from(context.input()).requireOrderId();
+        String reservationId = "res_" + context.stepExecutionId().toString().substring(0, 8);
+        log.info("Reserved inventory for order {} (reservation {})", orderId, reservationId);
+        return StepHandlerResult.succeeded(Map.of("reservationId", reservationId));
     }
 }

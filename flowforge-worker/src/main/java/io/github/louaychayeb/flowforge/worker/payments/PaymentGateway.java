@@ -16,8 +16,13 @@ public interface PaymentGateway {
      * @param status   what the provider decided
      * @param replayed {@code true} if the provider had already handled this key and only replayed its answer
      * @param message  detail for logs and error messages
+     * @param reference the provider's id for what it did (e.g. the charge id), when it reports one
      */
-    record Result(Status status, boolean replayed, String message) {
+    record Result(Status status, boolean replayed, String message, String reference) {
+
+        public Result(Status status, boolean replayed, String message) {
+            this(status, replayed, message, null);
+        }
     }
 
     enum Status {

@@ -50,7 +50,8 @@ public class HttpPaymentGateway implements PaymentGateway {
                         boolean replayed = "true".equals(response.getHeaders().getFirst("Idempotent-Replayed"));
                         String text = new String(response.getBody().readAllBytes());
                         if (status.is2xxSuccessful()) {
-                            return new Result(Status.OK, replayed, status.value() + (replayed ? " replayed" : ""));
+                            return new Result(Status.OK, replayed, status.value() + (replayed ? " replayed" : ""),
+                                    field(text, "chargeId", "refundId"));
                         }
                         if (status.value() == 402) {
                             return new Result(Status.REJECTED, replayed, "Payment declined: " + detail(text));
@@ -65,6 +66,21 @@ public class HttpPaymentGateway implements PaymentGateway {
             // is safe either way, which is the whole point of the key.
             return new Result(Status.UNAVAILABLE, false, "Payment provider unreachable: " + e.getMessage());
         }
+    }
+
+    /** The first of {@code names} present in a JSON body, or {@code null}. */
+    private static String field(String body, String... names) {
+        try {
+            JsonNode json = JSON.readTree(body);
+            for (String name : names) {
+                if (json.hasNonNull(name)) {
+                    return json.get(name).asText();
+                }
+            }
+        } catch (IOException e) {
+            // not JSON: no reference
+        }
+        return null;
     }
 
     /** The decline reason of a charge, or the {@code detail} of a problem response. */

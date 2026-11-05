@@ -57,6 +57,60 @@ class StepCommandProcessorTest {
     }
 
     @Test
+    void typedFailuresKeepTheirClassification() {
+        StepCommandProcessor processor = processor(
+                handler("PERM", context -> {
+                    throw new StepFailureException.Permanent("card declined");
+                }),
+                handler("INVALID", context -> {
+                    throw new StepFailureException.InvalidInput("orderId is required");
+                }),
+                handler("RETRY", context -> {
+                    throw new StepFailureException.Retryable("timeout");
+                }));
+
+        StepResult permanent = processor.process(command("PERM", 1, null)).orElseThrow();
+        assertThat(permanent.outcome()).isEqualTo(StepOutcome.PERMANENT_FAILURE);
+        assertThat(permanent.errorMessage()).isEqualTo("card declined");
+        assertThat(processor.process(command("INVALID", 1, null)).orElseThrow().outcome())
+                .isEqualTo(StepOutcome.PERMANENT_FAILURE);
+        assertThat(processor.process(command("RETRY", 1, null)).orElseThrow().outcome())
+                .isEqualTo(StepOutcome.RETRYABLE_FAILURE);
+    }
+
+    @Test
+    void outputsFlowFromEarlierStepsToTheHandlerAndBackInTheResult() {
+        StepCommandProcessor processor = processor(handler("SHIP", context ->
+                StepHandlerResult.succeeded(Map.of("trackingNumber",
+                        "TRK-" + context.requireOutput("charge-payment", "chargeId")))));
+        StepCommand command = new StepCommand(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "ship", "SHIP",
+                1, Map.of(), null, null, Map.of("charge-payment", Map.of("chargeId", "ch_42")));
+
+        StepResult result = processor.process(command).orElseThrow();
+
+        assertThat(result.output()).containsEntry("trackingNumber", "TRK-ch_42");
+    }
+
+    @Test
+    void aMissingRequiredOutputIsAPermanentFailure() {
+        StepCommandProcessor processor = processor(handler("SHIP", context -> {
+            context.requireOutput("charge-payment", "chargeId");
+            return StepHandlerResult.succeeded();
+        }));
+
+        StepResult result = processor.process(command("SHIP", 1, null)).orElseThrow();
+
+        assertThat(result.outcome()).isEqualTo(StepOutcome.PERMANENT_FAILURE);
+        assertThat(result.errorMessage()).contains("chargeId");
+    }
+
+    @Test
+    void onlyASuccessCanCarryOutput() {
+        assertThatThrownBy(() -> new StepHandlerResult(StepOutcome.PERMANENT_FAILURE, "no", Map.of("x", 1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void skipsCommandsPastTheirDeadlineWithoutRunningTheHandler() {
         AtomicInteger executions = new AtomicInteger();
         StepCommandProcessor processor = processor(handler("OK", context -> {

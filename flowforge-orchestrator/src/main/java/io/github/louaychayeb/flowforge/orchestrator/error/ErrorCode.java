@@ -22,6 +22,12 @@ public enum ErrorCode {
     ILLEGAL_STATE_TRANSITION(HttpStatus.CONFLICT, "Illegal state transition"),
     /** An outcome for an attempt that is no longer active; never reaches the API, handled by the listener. */
     STALE_ATTEMPT(HttpStatus.CONFLICT, "Stale attempt"),
+    /** An Idempotency-Key already used for a different request: a client bug, never safe to replay. */
+    IDEMPOTENCY_KEY_REUSED(HttpStatus.UNPROCESSABLE_ENTITY, "Idempotency key reused for a different request"),
+    /** No credentials, or wrong ones, for an endpoint that needs them. */
+    AUTHENTICATION_REQUIRED(HttpStatus.UNAUTHORIZED, "Authentication required"),
+    /** Authenticated, but without the role the endpoint needs. */
+    ACCESS_DENIED(HttpStatus.FORBIDDEN, "Access denied"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Internal error");
 
     private final HttpStatus status;

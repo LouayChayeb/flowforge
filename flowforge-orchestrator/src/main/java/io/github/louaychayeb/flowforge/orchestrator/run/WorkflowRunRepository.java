@@ -18,4 +18,6 @@ public interface WorkflowRunRepository extends JpaRepository<WorkflowRun, UUID> 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select r from WorkflowRun r where r.id = :id")
     Optional<WorkflowRun> findByIdForUpdate(UUID id);
+
+    Optional<WorkflowRun> findByIdempotencyKey(String idempotencyKey);
 }

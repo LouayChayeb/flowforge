@@ -75,6 +75,12 @@ public class WorkflowRun {
     /** W3C traceparent of the trace this run belongs to; {@code null} when tracing is off. */
     private String traceParent;
 
+    /** The client's Idempotency-Key, unique across runs; {@code null} when the client sent none. */
+    private String idempotencyKey;
+
+    /** SHA-256 of the workflow name and input the key was first used with: a reuse for anything else is refused. */
+    private String requestHash;
+
     @Version
     private Long lockVersion;
 
@@ -338,6 +344,23 @@ public class WorkflowRun {
 
     public String getTraceParent() {
         return traceParent;
+    }
+
+    /** Ties the run to the client's Idempotency-Key; see {@link WorkflowRunService#start}. */
+    void assignIdempotencyKey(String key, String hash) {
+        if (key == null || key.isBlank() || hash == null) {
+            throw new IllegalArgumentException("An idempotency key and its request hash are both required");
+        }
+        this.idempotencyKey = key;
+        this.requestHash = hash;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    String getRequestHash() {
+        return requestHash;
     }
 
     /** Records the trace this run belongs to; see {@code RunTracing}. */

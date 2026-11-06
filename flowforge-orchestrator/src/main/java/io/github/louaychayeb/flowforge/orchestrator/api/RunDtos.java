@@ -45,6 +45,7 @@ public final class RunDtos {
             Instant completedAt,
             Instant cancelRequestedAt,
             String traceId,
+            String idempotencyKey,
             List<StepExecutionResponse> steps,
             List<OperatorActionResponse> operatorActions
     ) {
@@ -69,6 +70,7 @@ public final class RunDtos {
                     run.getCompletedAt(),
                     run.getCancelRequestedAt(),
                     RunTracing.traceId(run.getTraceParent()),
+                    run.getIdempotencyKey(),
                     run.getSteps().stream().map(StepExecutionResponse::from).toList(),
                     actions.stream().map(OperatorActionResponse::from).toList());
         }

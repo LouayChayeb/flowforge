@@ -22,9 +22,9 @@ CI builds both images on every push, after the tests pass, and lints and renders
 | PostgreSQL StatefulSet | 1 instance, 2 Gi volume | For development clusters. Disable and set `postgresql.external.url` to use a managed database |
 | Kafka StatefulSet (KRaft) | 1 node, 12 partitions | For development clusters. Disable and set `kafka.externalBootstrap` to use your own |
 
-Every pod has startup, liveness and readiness probes on the actuator health groups, resource requests and memory limits, and shuts down gracefully on `SIGTERM`. Engine settings are passed through verbatim from `orchestrator.engine` (see [values.yaml](helm/flowforge/values.yaml)), so any property in [architecture.md](../docs/architecture.md) can be tuned per environment.
+Every pod has startup, liveness and readiness probes on the actuator health groups, resource requests and memory limits, and shuts down gracefully on `SIGTERM`. Engine settings are passed through verbatim from `orchestrator.engine` (see [values.yaml](helm/flowforge/values.yaml)), so any property in architecture.md can be tuned per environment.
 
-`kafka.partitions` caps worker parallelism: each partition is consumed by one thread at a time, so `worker.replicas x worker.listenerConcurrency` above it leaves threads idle, and a count that does not divide it evenly leaves some threads with twice the load of others (see [performance.md](../docs/performance.md)).
+`kafka.partitions` caps worker parallelism: each partition is consumed by one thread at a time, so `worker.replicas x worker.listenerConcurrency` above it leaves threads idle, and a count that does not divide it evenly leaves some threads with twice the load of others.
 
 ## Minikube
 
@@ -71,4 +71,3 @@ kubectl port-forward -n flowforge svc/flowforge-jaeger 16686:16686
 java loadtest/LoadTest.java --base http://localhost:8085 --rate 20 --duration 60
 ```
 
-Results and analysis are in [performance.md](../docs/performance.md).

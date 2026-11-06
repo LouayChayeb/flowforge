@@ -19,7 +19,7 @@ Thumbs.db
 .env
 *.log
 
-# Documents (PDFs, Word, slides, spreadsheets): kept locally, never committed
+# Documents (the docs folder, PDFs, Word, slides, spreadsheets): kept locally, never committed
 *.pdf
 *.doc
 *.docx
@@ -29,4 +29,4 @@ Thumbs.db
 *.xlsx
 *.odt
 *.rtf
-docs/guide/
+docs/

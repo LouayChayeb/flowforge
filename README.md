@@ -12,9 +12,9 @@ FlowForge is a compact, explicit take on the durable-execution model used by wor
 - leases, retries with backoff, and recovery after process failure
 - saga-style compensation for partially completed business operations
 
-![The live dashboard under load: every step goes round the numbered loop, with beams on the edges carrying traffic and Kafka messages in flight](docs/images/live.png)
+![The live dashboard under load: every step goes round the numbered loop, with beams on the edges carrying traffic and Kafka messages in flight](images/live.png)
 
-> **Status:** All five phases complete, plus parallel steps, instant dispatch, an idempotent payment provider and end-to-end tracing. It runs on Kubernetes from a Helm chart and handles 30–40 five-step workflow runs per second (up to 200 step executions/s) on a single 6-CPU Minikube node; at light load a run takes about 0.34 s from request to completion — see [performance](docs/performance.md). Commands go through a transactional outbox, running steps hold leases, failed runs are compensated, and a [consistency checker](docs/correctness.md) verifies ten invariants of the execution history. They hold under a stress test with concurrent engine instances, duplicated and late messages, and lease races, and in a live run with two orchestrators, three workers and a killed worker. See the [crash-recovery demo](docs/recovery-demo.md) and the [roadmap](#roadmap).
+> **Status:** All five phases complete, plus parallel steps, instant dispatch, an idempotent payment provider and end-to-end tracing. It runs on Kubernetes from a Helm chart and handles 30–40 five-step workflow runs per second (up to 200 step executions/s) on a single 6-CPU Minikube node; at light load a run takes about 0.34 s from request to completion. Commands go through a transactional outbox, running steps hold leases, failed runs are compensated, and a consistency checker verifies ten invariants of the execution history. They hold under a stress test with concurrent engine instances, duplicated and late messages, and lease races, and in a live run with two orchestrators, three workers and a killed worker. See the [roadmap](#roadmap).
 
 ---
 
@@ -57,8 +57,6 @@ flowchart LR
 | **Payment provider** (`flowforge-payments`) | A simulated external service that remembers idempotency keys, so a charge step that runs twice charges once |
 | **Common** (`flowforge-common`) | Message contracts shared by orchestrator and workers |
 
-More detail, including how each failure mode is handled, is in [docs/architecture.md](docs/architecture.md).
-
 ## Dashboard
 
 The orchestrator serves a live dashboard at its root, **http://localhost:8080/**. It is a React + TypeScript app (Vite, Tailwind CSS, [shadcn/ui](https://ui.shadcn.com), and animated components from [Magic UI](https://magicui.design) and [Motion Primitives](https://motion-primitives.com)) in [`flowforge-orchestrator/src/main/frontend`](flowforge-orchestrator/src/main/frontend), built into the jar by Maven, which downloads its own Node, so the build still needs nothing but Java. It is meant for demos and for learning how the engine works:
@@ -71,15 +69,15 @@ The orchestrator serves a live dashboard at its root, **http://localhost:8080/**
 
 **A run that compensated.** The fraud check failed while its parallel sibling had already reserved stock, so the engine waited for the sibling and then undid it:
 
-![Run detail: the run's state machine, steps laid out by dependency with their outputs, and the undo lane](docs/images/run.png)
+![Run detail: the run's state machine, steps laid out by dependency with their outputs, and the undo lane](images/run.png)
 
 **Where a run's time went.** Shipping timed out twice; the hatched stretches are retry backoffs, during which the run holds no worker and no thread:
 
-![Waterfall of a run whose shipment needed three attempts](docs/images/waterfall.png)
+![Waterfall of a run whose shipment needed three attempts](images/waterfall.png)
 
 **Correctness, live.** Every 5 s the ten invariants are checked against the stored history:
 
-![Engine tab: counters and the ten invariants](docs/images/engine.png)
+![Engine tab: counters and the ten invariants](images/engine.png)
 
 "Take the tour" walks through it; "Guide mode" shows the explanations everywhere; <kbd>Ctrl</kbd> <kbd>K</kbd> opens a command palette (views, recent runs, scenarios) and <kbd>?</kbd> lists the keyboard shortcuts. Light and dark themes, and it works on a phone.
 
@@ -105,7 +103,7 @@ Skip the dashboard build for a faster Java-only build with `-Dskip.installnodenp
 | `POST` | `/api/runs/{runId}/retry` | Retry a compensation that failed (`COMPENSATION_FAILED` → `COMPENSATING`) once the cause is fixed (operator) |
 | `POST` | `/api/runs/{runId}/signals/{step}` | Deliver the signal a `SIGNAL` step is waiting for; `{"payload": {…}}` becomes its output (operator) |
 | `GET` | `/api/auth/me` | Who the credentials belong to, and their roles |
-| `GET` | `/api/admin/consistency` | Check the stored history against FlowForge's [invariants](docs/correctness.md); `?workflow=` to narrow it |
+| `GET` | `/api/admin/consistency` | Check the stored history against FlowForge's invariants; `?workflow=` to narrow it |
 
 Read-only endpoints behind the dashboard:
 
@@ -143,15 +141,15 @@ Validation failures (`VALIDATION_FAILED`) list every invalid field under `errors
 ### Step outputs, timers, signals and cancellation
 
 - **Outputs.** A handler returns `StepHandlerResult.succeeded(Map.of("reservationId", id))`; the output (at most 64 KB of JSON) is stored on the step and handed to every later step: `context.requireOutput("reserve-inventory", "reservationId")`. That is how the undo step knows what to release.
-- **Durable timers.** A step of type `WAIT` with `"waitFor": "PT20S"` (up to 30 days) pauses the run. Its due time is stored when its dependencies complete; the orchestrator completes it itself — no worker, no Kafka message — so it survives restarts. See [the cooling-off example](docs/examples/order-with-cooling-off.json).
-- **Signals.** A step of type `SIGNAL` with `"waitFor": "PT2M"` waits for an event from outside — a manager's approval, a payment webhook — for up to that long. `POST /api/runs/{id}/signals/{step}` delivers it; its `payload` becomes the step's output, so later steps can read it. No signal by the deadline: the step fails and the run compensates what it did. A signal before the step is due, or a second one, is a `409`. See [the approval example](docs/examples/order-with-approval.json).
+- **Durable timers.** A step of type `WAIT` with `"waitFor": "PT20S"` (up to 30 days) pauses the run. Its due time is stored when its dependencies complete; the orchestrator completes it itself — no worker, no Kafka message — so it survives restarts. See [the cooling-off example](examples/order-with-cooling-off.json).
+- **Signals.** A step of type `SIGNAL` with `"waitFor": "PT2M"` waits for an event from outside — a manager's approval, a payment webhook — for up to that long. `POST /api/runs/{id}/signals/{step}` delivers it; its `payload` becomes the step's output, so later steps can read it. No signal by the deadline: the step fails and the run compensates what it did. A signal before the step is due, or a second one, is a `409`. See [the approval example](examples/order-with-approval.json).
 - **Typed failures.** Handlers throw `StepFailureException.Retryable`, `.Permanent` or `.InvalidInput` (a sealed hierarchy) instead of building results by hand; any other exception counts as retryable.
 
-**1. Register a workflow** ([example file](docs/examples/order-processing.json)):
+**1. Register a workflow** ([example file](examples/order-processing.json)):
 
 ```bash
 curl -X POST localhost:8080/api/workflows -H "Content-Type: application/json" \
-     -d @docs/examples/order-processing.json
+     -d @examples/order-processing.json
 ```
 
 **2. Start a run:**
@@ -351,7 +349,7 @@ flowforge/
 ├── deploy/helm/flowforge/     # Helm chart: orchestrator, workers, payments, PostgreSQL, Kafka, observability
 ├── deploy/observability/      # Prometheus and Grafana configuration for docker compose
 ├── loadtest/                  # Open-model load generator and Kubernetes runner
-├── docs/                      # Architecture, correctness and performance notes
+├── examples/                  # Example workflow definitions (order processing, cooling-off, approval)
 ├── Dockerfile                 # Layered, non-root image for either service
 ├── docker-compose.yml         # Local PostgreSQL + Kafka + Kafka UI (+ Jaeger, Prometheus, Grafana)
 └── .github/workflows/ci.yml   # Tests, image builds, chart lint
@@ -362,10 +360,10 @@ flowforge/
 - [x] **Phase 0 — Scaffold:** multi-module build, local infrastructure, CI
 - [x] **Phase 1 — Core engine (no Kafka):** workflow definitions, runs, sequential step execution, explicit state machine, persisted transitions, run status API
 - [x] **Phase 2 — Asynchronous execution:** move steps to worker processes; commands and results over Kafka; consumer groups and partitioning
-- [x] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation — plus the [crash-recovery demo](docs/recovery-demo.md)
-- [x] **Phase 4 — Concurrency and correctness:** multiple workers and orchestrators on the same workload; a consistency checker, a lease-race test and a chaos stress test prove no double-claiming and no stale-message corruption — see [docs/correctness.md](docs/correctness.md)
-- [x] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits — see [deploy/README.md](deploy/README.md) and [docs/performance.md](docs/performance.md)
-- [x] **Beyond the plan:** a live, explanatory [dashboard](#dashboard); instant dispatch on commit instead of polling ([performance](docs/performance.md#instant-dispatch)); parallel steps with `dependsOn`; a simulated payment provider that proves a step run twice charges once; one OpenTelemetry trace per run, Prometheus metrics and a Grafana dashboard; step outputs, durable timers, operator cancel/retry with an audit trail, and typed errors as RFC 9457 problem details; idempotent starts (one run per `Idempotency-Key`), signals that wait for outside events, and operator login with roles
+- [x] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation
+- [x] **Phase 4 — Concurrency and correctness:** multiple workers and orchestrators on the same workload; a consistency checker, a lease-race test and a chaos stress test prove no double-claiming and no stale-message corruption
+- [x] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits — see [deploy/README.md](deploy/README.md)
+- [x] **Beyond the plan:** a live, explanatory [dashboard](#dashboard); instant dispatch on commit instead of polling; parallel steps with `dependsOn`; a simulated payment provider that proves a step run twice charges once; one OpenTelemetry trace per run, Prometheus metrics and a Grafana dashboard; step outputs, durable timers, operator cancel/retry with an audit trail, and typed errors as RFC 9457 problem details; idempotent starts (one run per `Idempotency-Key`), signals that wait for outside events, and operator login with roles
 
 ## License
 

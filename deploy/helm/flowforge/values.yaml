@@ -11,13 +11,13 @@ orchestrator:
   service:
     type: ClusterIP
     port: 8080
-  # Passed through verbatim as the Spring properties under flowforge.engine (see docs/architecture.md).
+  # Passed through verbatim as the Spring properties under flowforge.engine.
   engine:
     batch-size: 10
     lease-duration: 60s
     # Run the loops as soon as work appears, not only on their ticks (the ticks stay as a safety net).
     wakeup: true
-    # A wake-up waits this long so work appearing close together shares one batch (see docs/performance.md).
+    # A wake-up waits this long so work appearing close together shares one batch.
     wakeup-linger: 20ms
     scheduler:
       dispatch-interval-ms: 500

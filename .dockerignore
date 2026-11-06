@@ -9,3 +9,4 @@ loadtest/
 *.md
 *.log
 .env
+**/node_modules/

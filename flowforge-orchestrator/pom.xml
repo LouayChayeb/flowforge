@@ -108,6 +108,40 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+            <!--
+              The dashboard (src/main/frontend: React, Vite, Tailwind) is built into target/classes/static, so the jar
+              serves it at /. Maven downloads its own Node, so the build needs nothing installed beyond Java.
+              Skip it with -Dskip.installnodenpm -Dskip.npm when only the Java side matters.
+            -->
+            <plugin>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <version>1.15.1</version>
+                <configuration>
+                    <workingDirectory>src/main/frontend</workingDirectory>
+                    <installDirectory>${project.build.directory}</installDirectory>
+                    <nodeVersion>v22.12.0</nodeVersion>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>install-node</id>
+                        <goals><goal>install-node-and-npm</goal></goals>
+                        <phase>generate-resources</phase>
+                    </execution>
+                    <execution>
+                        <id>npm-ci</id>
+                        <goals><goal>npm</goal></goals>
+                        <phase>generate-resources</phase>
+                        <configuration><arguments>ci --no-audit --no-fund</arguments></configuration>
+                    </execution>
+                    <execution>
+                        <id>build-dashboard</id>
+                        <goals><goal>npm</goal></goals>
+                        <phase>generate-resources</phase>
+                        <configuration><arguments>run build</arguments></configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

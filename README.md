@@ -59,15 +59,25 @@ More detail, including how each failure mode is handled, is in [docs/architectur
 
 ## Dashboard
 
-The orchestrator serves a live dashboard at its root, **http://localhost:8080/** (no separate frontend, no build step). It is meant for demos and for learning how the engine works:
+The orchestrator serves a live dashboard at its root, **http://localhost:8080/**. It is a React + TypeScript app (Vite, Tailwind CSS, [shadcn/ui](https://ui.shadcn.com), and animated components from [Magic UI](https://magicui.design) and [Motion Primitives](https://motion-primitives.com)) in [`flowforge-orchestrator/src/main/frontend`](flowforge-orchestrator/src/main/frontend), built into the jar by Maven, which downloads its own Node, so the build still needs nothing but Java. It is meant for demos and for learning how the engine works:
 
-- **Live** — one-click orders for every outcome (normal, fraud detected in a parallel step, flaky carrier, carrier down, declined payment, undeliverable address, invalid order, failed refund, slow shipment), and a diagram of how a step travels with live rates per edge. Clicking a component explains what it does and which classes and methods do it.
-- **Run detail** — the run's state machine and the path it took, its steps laid out by dependency (parallel steps side by side) and its undo steps, with attempts and lease countdowns, what the payment provider recorded for the order, a link to the run's distributed trace, and a timeline rebuilt from the stored attempts and outbox rows, each event explaining the code behind it.
+- **Live** — headline numbers, one-click orders for every outcome (normal, fraud detected in a parallel step, flaky carrier, carrier down, declined payment, undeliverable address, invalid order, failed refund, a cooling-off order to cancel, slow shipment), and a diagram of how a step travels, with animated beams on the edges carrying traffic and live rates per edge. Clicking a component explains what it does and which classes and methods do it.
+- **Run detail** — the run's state machine and the path it took, its steps laid out by dependency (parallel steps side by side) and its undo steps, with attempts, lease and timer countdowns and step outputs, a waterfall of every attempt on one time axis, Cancel and Retry compensation buttons, what the payment provider recorded for the order, a link to the run's distributed trace, and a timeline rebuilt from the stored attempts and outbox rows, each event explaining the code behind it.
 - **Engine** — counters, leases and retry backoffs in progress, database totals, the ten invariants checked every 5 s, the payment provider's ledger (duplicates absorbed, orders charged twice: 0), and the configuration the instance runs with.
 - **Kafka** — which consumer owns which partition, committed offsets and lag, and a guide to killing a worker and watching its partitions move.
 - **Learn** — the life of an order, failure modes and what handles them, the guarantees, a searchable map of every class, and a glossary.
 
-"Take the tour" walks through it; "Guide mode" shows the explanations everywhere.
+"Take the tour" walks through it; "Guide mode" shows the explanations everywhere; <kbd>Ctrl</kbd> <kbd>K</kbd> opens a command palette (views, recent runs, scenarios) and <kbd>?</kbd> lists the keyboard shortcuts. Light and dark themes, and it works on a phone.
+
+To work on the dashboard with hot reload, run an orchestrator on port 8085 (or set `FLOWFORGE_URL`) and:
+
+```bash
+cd flowforge-orchestrator/src/main/frontend
+npm install
+npm run dev   # http://localhost:5173, API calls proxied to the orchestrator
+```
+
+Skip the dashboard build for a faster Java-only build with `-Dskip.installnodenpm -Dskip.npm`.
 
 ## API
 
@@ -244,6 +254,7 @@ What it does **not** guarantee on its own: an external side effect (a charge, an
 | Kubernetes + Helm | Deploying, restarting and scaling orchestrator and workers |
 | OpenTelemetry + Jaeger | One distributed trace per run, across the database, Kafka and the payment provider |
 | Micrometer + Prometheus + Grafana | Metrics, latency histograms and a ready-made dashboard |
+| React + TypeScript, Vite, Tailwind CSS, shadcn/ui, Magic UI | The live dashboard, built into the orchestrator jar |
 | GitHub Actions | Tests, Docker image builds and Helm chart lint on every push |
 
 ## Getting started
@@ -309,7 +320,7 @@ flowforge/
 │       ├── outbox/            # Transactional outbox and its publisher
 │       ├── consistency/       # Invariant checker behind /api/admin/consistency
 │       └── insight/           # Read-only queries and Kafka inspection for the dashboard
-│   └── src/main/resources/static/   # The dashboard (plain HTML, CSS and JavaScript)
+│   └── src/main/frontend/           # The dashboard (React, TypeScript, Vite, Tailwind, shadcn/ui)
 ├── flowforge-worker/          # Kafka command listener
 │   └── src/main/java/…/worker/
 │       ├── handlers/          # Sample order-processing step handlers

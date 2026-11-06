@@ -38,7 +38,7 @@ export const commandFor = (commands: Command[], step: Step, attempt: Attempt) =>
 
 export type TimelineKind =
   | 'created' | 'claimed' | 'published' | 'succeeded' | 'retryable' | 'exhausted' | 'permanent' | 'timedout'
-  | 'compensating' | 'finished' | 'waiting' | 'inflight' | 'timer' | 'operator'
+  | 'compensating' | 'finished' | 'waiting' | 'inflight' | 'timer' | 'operator' | 'signal' | 'signalMissed'
 
 export interface TimelineEvent {
   t: number
@@ -91,6 +91,16 @@ export function buildTimeline(run: Run, commands: Command[], config: EngineConfi
       }
     }
     for (const a of step.attempts) {
+      if (step.waitFor && step.type === 'SIGNAL') {
+        if (a.status === 'SUCCEEDED') {
+          add(a.startedAt, 'signal', `Signal ${label} received`, 'the payload became the step output; the steps after it are ready',
+            TIMELINE_WHY.signal, 'var(--primary)')
+        } else {
+          add(a.startedAt, 'signalMissed', `${label} missed its deadline`, a.errorMessage ?? 'no signal in time',
+            TIMELINE_WHY.signalMissed, 'var(--s-failed)')
+        }
+        continue
+      }
       if (step.waitFor) {
         add(a.startedAt, 'timer', `Timer ${label} fired`, 'completed by the orchestrator itself — no command, no worker',
           TIMELINE_WHY.timer, 'var(--s-retry)')
@@ -137,10 +147,10 @@ export function buildTimeline(run: Run, commands: Command[], config: EngineConfi
     }
   }
   for (const action of run.operatorActions ?? []) {
-    add(action.performedAt, 'operator',
-      `Operator ${action.action === 'CANCEL' ? 'cancelled the run' : 'retried the failed compensation'} (${action.actor})`,
+    const verb = action.action === 'CANCEL' ? 'cancelled the run' : action.action === 'SIGNAL' ? 'sent a signal' : 'retried the failed compensation'
+    add(action.performedAt, 'operator', `Operator ${verb} (${action.actor})`,
       action.reason ? `“${action.reason}”` : `run was ${action.runStatusBefore}`,
-      TIMELINE_WHY[action.action === 'CANCEL' ? 'cancelled' : 'retried'], 'var(--primary)')
+      TIMELINE_WHY[action.action === 'CANCEL' ? 'cancelled' : action.action === 'SIGNAL' ? 'signalSent' : 'retried'], 'var(--primary)')
   }
   if (run.completedAt) {
     add(run.completedAt, 'finished', `Run ${run.status}`, RUN_STATES[run.status] ?? '', TIMELINE_WHY.finished, STATUS_COLOR[run.status])

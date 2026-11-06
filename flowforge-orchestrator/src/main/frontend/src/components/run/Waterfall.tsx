@@ -29,9 +29,11 @@ function segmentsOf(step: Step, run: Run, now: number): Segment[] {
     const armed = step.nextAttemptAt ? ms(step.nextAttemptAt)! - wait : deps.length ? Math.max(...deps.map((d) => done(d) ?? 0)) : ms(run.createdAt)!
     const fired = ms(step.attempts[0]?.startedAt)
     const stop = fired ?? (step.nextAttemptAt ? Math.min(ms(step.nextAttemptAt)!, now) : null)
-    if (armed && stop) segs.push({ key: 'timer', from: armed, to: stop, kind: 'wait', tip: `durable timer, ${fmtDur(wait)}` })
-    if (step.nextAttemptAt && !fired) segs.push({ key: 'due', from: ms(step.nextAttemptAt)!, to: ms(step.nextAttemptAt)!, kind: 'mark', tip: `due ${fmtClock(step.nextAttemptAt)}` })
-    if (fired) segs.push({ key: 'fired', from: fired, to: fired, kind: 'mark', tip: `fired ${fmtClock(step.attempts[0].startedAt)}` })
+    const signal = step.type === 'SIGNAL'
+    const outcome = step.attempts[0]?.status === 'SUCCEEDED' ? 'signal received' : 'deadline missed'
+    if (armed && stop) segs.push({ key: 'timer', from: armed, to: stop, kind: 'wait', tip: signal ? `waiting for a signal, up to ${fmtDur(wait)}` : `durable timer, ${fmtDur(wait)}` })
+    if (step.nextAttemptAt && !fired) segs.push({ key: 'due', from: ms(step.nextAttemptAt)!, to: ms(step.nextAttemptAt)!, kind: 'mark', tip: `${signal ? 'deadline' : 'due'} ${fmtClock(step.nextAttemptAt)}` })
+    if (fired) segs.push({ key: 'fired', from: fired, to: fired, kind: 'mark', tip: `${signal ? outcome : 'fired'} ${fmtClock(step.attempts[0].startedAt)}` })
     return segs
   }
   step.attempts.forEach((a, i) => {

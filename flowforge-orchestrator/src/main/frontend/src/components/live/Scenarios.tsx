@@ -1,4 +1,4 @@
-import { ChevronRight, Play, Send, Zap } from 'lucide-react'
+import { ChevronRight, Copy, Play, Send, Zap } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Explain, Panel, StatusBadge } from '@/components/common'
@@ -29,6 +29,19 @@ export function Scenarios() {
       start(orderInput(SCENARIOS.find((s) => s.id === BURST_MIX[i % BURST_MIX.length])!.input), { quiet: true })))
     setBusy(null)
     toast.success('Sent 20 orders', { description: 'Watch the beams light up and the Engine tab counters climb.' })
+  }
+
+  /** The same order sent twice at once, as a double click would: one run, one charge. */
+  const twice = async () => {
+    setBusy('twice')
+    const input = orderInput({})
+    const results = await Promise.all([start(input, { quiet: true }), start(input, { quiet: true })])
+    setBusy(null)
+    const created = results.filter(Boolean) as { runId: string; replayed: boolean }[]
+    const runs = new Set(created.map((r) => r.runId)).size
+    toast.success(`Sent ${String(input.orderId)} twice: ${runs} run`, {
+      description: `${created.filter((r) => r.replayed).length} of the 2 requests got the run the other one started back. Same Idempotency-Key, so no second charge.`,
+    })
   }
 
   const sendCustom = async () => {
@@ -82,9 +95,15 @@ export function Scenarios() {
         </CollapsibleContent>
       </Collapsible>
 
-      <Button variant="outline" className="w-full" onClick={burst} disabled={busy === 'burst'}>
-        <Zap /> Send 20 mixed orders
-      </Button>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+        <Button variant="outline" onClick={burst} disabled={busy === 'burst'}>
+          <Zap /> Send 20 mixed orders
+        </Button>
+        <Button variant="outline" onClick={twice} disabled={busy === 'twice'}
+          title="Two identical requests at the same moment: the Idempotency-Key makes the second one return the first run">
+          <Copy /> Submit one order twice
+        </Button>
+      </div>
     </Panel>
   )
 }

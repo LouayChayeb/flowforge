@@ -42,7 +42,15 @@ export function StepDetail({ step, commands }: { step: Step; commands: Command[]
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
         <div className="space-y-3 text-sm leading-relaxed">
           <Html as="p" html={STEP_STATES[step.status] ?? ''} className="text-muted-foreground" />
-          {step.waitFor && (
+          {step.waitFor && step.type === 'SIGNAL' && (
+            <p className="rounded-md border border-dashed border-primary/50 bg-primary/5 p-2.5 text-[13px]">
+              A <b>signal</b> step: it waits up to <b>{fmtDur(parseIsoDuration(step.waitFor))}</b> for an event from outside
+              {step.nextAttemptAt ? <> (deadline <b>{fmtClock(step.nextAttemptAt)}</b>)</> : ' once its dependencies complete'}.
+              An operator — or a webhook — delivers it with <code>POST /api/runs/{'{id}'}/signals/{step.name}</code>, and its JSON
+              payload becomes this step's output. No signal by the deadline: the step fails and the run undoes what it did.
+            </p>
+          )}
+          {step.waitFor && step.type !== 'SIGNAL' && (
             <p className="rounded-md border border-dashed border-s-retry/50 bg-s-retry/5 p-2.5 text-[13px]">
               A durable timer of <b>{fmtDur(parseIsoDuration(step.waitFor))}</b>: due{' '}
               {step.nextAttemptAt ? <b>{fmtClock(step.nextAttemptAt)}</b> : 'once its dependencies complete'}. The orchestrator

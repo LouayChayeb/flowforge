@@ -1,4 +1,4 @@
-import { ArrowRight, Hourglass, Timer } from 'lucide-react'
+import { ArrowRight, BellRing, Hourglass, Timer } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { Bar, Explain, Panel, StatusBadge } from '@/components/common'
 import { BorderBeam } from '@/components/ui/border-beam'
@@ -25,6 +25,7 @@ function StepCard({ step, selected, onSelect }: { step: Step; selected: boolean;
   const now = useNow(200)
   const color = colorOf(step.status)
   const output = Object.entries(step.output ?? {})
+  const signal = step.type === 'SIGNAL'
 
   let progress = null
   if (step.status === 'RUNNING' && step.leaseExpiresAt) {
@@ -39,11 +40,19 @@ function StepCard({ step, selected, onSelect }: { step: Step; selected: boolean;
   } else if (step.status === 'RETRY_WAIT' && step.nextAttemptAt) {
     progress = <Countdown until={ms(step.nextAttemptAt)!} now={now} prefix="retry in" />
   } else if (step.waitFor && step.status === 'PENDING' && step.nextAttemptAt) {
-    progress = <Countdown until={ms(step.nextAttemptAt)!} now={now} prefix="fires in" />
+    progress = signal
+      ? (
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1 text-xs font-medium text-primary"><BellRing className="size-3.5" /> waiting for the signal</div>
+          <Countdown until={ms(step.nextAttemptAt)!} now={now} prefix="deadline in" />
+        </div>
+      )
+      : <Countdown until={ms(step.nextAttemptAt)!} now={now} prefix="fires in" />
   } else if (step.waitFor && step.attemptCount === 0) {
     progress = (
       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-        <Hourglass className="size-3.5" /> waits {fmtDur(parseIsoDuration(step.waitFor))}
+        {signal ? <BellRing className="size-3.5" /> : <Hourglass className="size-3.5" />}
+        {signal ? 'waits up to' : 'waits'} {fmtDur(parseIsoDuration(step.waitFor))}{signal ? ' for a signal' : ''}
       </div>
     )
   }

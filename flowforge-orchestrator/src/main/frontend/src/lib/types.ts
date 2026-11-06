@@ -48,7 +48,7 @@ export interface Step {
 }
 
 export interface OperatorAction {
-  action: 'CANCEL' | 'RETRY_COMPENSATION'
+  action: 'CANCEL' | 'RETRY_COMPENSATION' | 'SIGNAL'
   actor: string
   reason: string | null
   runStatusBefore: RunStatus
@@ -65,6 +65,7 @@ export interface Run {
   createdAt: string
   completedAt: string | null
   traceId: string | null
+  idempotencyKey: string | null
   cancelRequestedAt: string | null
   operatorActions: OperatorAction[] | null
   steps: Step[]

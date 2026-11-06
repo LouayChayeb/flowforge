@@ -7,6 +7,7 @@ import { BlurFade } from '@/components/ui/blur-fade'
 import { DotPattern } from '@/components/ui/dot-pattern'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { AuthProvider } from '@/lib/auth'
 import { StoreProvider, useStore, VIEWS } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import { EngineView } from '@/views/EngineView'
@@ -94,9 +95,11 @@ function Shell() {
 export default function App() {
   return (
     <StoreProvider>
-      <TooltipProvider delay={200}>
-        <Shell />
-      </TooltipProvider>
+      <AuthProvider>
+        <TooltipProvider delay={200}>
+          <Shell />
+        </TooltipProvider>
+      </AuthProvider>
     </StoreProvider>
   )
 }

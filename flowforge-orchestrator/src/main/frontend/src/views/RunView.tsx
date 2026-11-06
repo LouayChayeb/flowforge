@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Empty, Panel } from '@/components/common'
-import { OperatorDialog, type OperatorKind } from '@/components/run/OperatorDialog'
+import { OperatorDialog, type OperatorAction } from '@/components/run/OperatorDialog'
 import { RunHeader } from '@/components/run/RunHeader'
 import { StepDetail } from '@/components/run/StepDetail'
 import { StepLanes } from '@/components/run/StepLanes'
@@ -15,7 +15,7 @@ export function RunView() {
   const { runId, runs, openRun, setView, pollSoon } = useStore()
   const { run, commands, payments, missing, refresh } = useRunDetail(runId)
   const [stepId, setStepId] = useState<string | null>(null)
-  const [operator, setOperator] = useState<OperatorKind | null>(null)
+  const [operator, setOperator] = useState<OperatorAction | null>(null)
 
   useEffect(() => setStepId(null), [runId])
 
@@ -42,7 +42,7 @@ export function RunView() {
       {selected && <StepDetail step={selected} commands={commands} />}
       <Waterfall run={run} selectedId={selected?.stepExecutionId ?? null} onSelect={setStepId} />
       <Timeline run={run} commands={commands} />
-      <OperatorDialog runId={run.runId} kind={operator} onClose={() => setOperator(null)} onDone={() => { refresh(); pollSoon() }} />
+      <OperatorDialog runId={run.runId} action={operator} onClose={() => setOperator(null)} onDone={() => { refresh(); pollSoon() }} />
     </div>
   )
 }

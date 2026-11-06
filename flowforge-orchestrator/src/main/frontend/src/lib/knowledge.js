@@ -197,6 +197,9 @@ export const TIMELINE_WHY = {
   timer: 'A durable timer (a WAIT step). Its due time was stored in <code>next_attempt_at</code> when its dependencies completed; the dispatcher claimed it once due and <code>StepStateService.fireTimer()</code> completed it in the same transaction — no command, no worker. A restart in between changes nothing: the due time is in the database.',
   cancelled: 'An operator called <code>POST /api/runs/{id}/cancel</code>. <code>OperatorService.cancel()</code> locked the steps and the run, recorded an <code>operator_action</code> row, and <code>WorkflowRun.cancel()</code> withdrew every eligible step. Once nothing was in flight, the completed steps were compensated.',
   retried: 'An operator called <code>POST /api/runs/{id}/retry</code>. <code>WorkflowRun.retryCompensation()</code> reopened the failed undo step with extra attempts (its history is kept) and put the run back into COMPENSATING.',
+  signal: 'A signal arrived for this SIGNAL step: <code>POST /api/runs/{id}/signals/{step}</code>, which needs the OPERATOR role. <code>OperatorService.signal()</code> locked the steps and the run, checked the step was waiting, and <code>StepExecution.deliverSignal()</code> completed it with the payload as its output — the steps after it became ready at once.',
+  signalMissed: 'The deadline passed with no signal. The step only becomes claimable at its deadline, so when the dispatcher claimed it, <code>StepStateService.missSignal()</code> failed it permanently, and the run compensated what it had completed. A signal racing the deadline locks the same row first: one of the two wins.',
+  signalSent: 'An operator delivered the signal. The audit trail records the signed-in user, not a typed name: operator endpoints need HTTP Basic credentials with the OPERATOR role (<code>SecurityConfig</code>).',
   inflight: 'The command is with a worker (or queued in Kafka). If no result comes back before the lease expires, the recovery sweeper will time this attempt out.',
 };
 
@@ -269,6 +272,9 @@ export const GLOSSARY = [
   ['Cancellation', 'An operator stops a running run: nothing new starts, running steps finish, completed ones are undone, and the run ends CANCELLED.'],
   ['Operator action', 'A manual intervention (cancel, retry compensation), recorded with who, why and the status before it in operator_action — an audit trail.'],
   ['Problem details (RFC 9457)', 'The standard JSON error format the API returns, with a stable code (RUN_NOT_FOUND, OPERATION_NOT_ALLOWED…), a type URN and the trace id.'],
+  ['Idempotency-Key (starting a run)', 'A header on POST /runs: the same key again returns the run it already started (200, Idempotent-Replayed: true) instead of a second run, so an order submitted twice is charged once. The same key with a different input is refused (422). The dashboard sends the order id.'],
+  ['Signal', 'A SIGNAL step waits for an event from outside — a manager approval, a payment webhook — delivered with POST /api/runs/{id}/signals/{step}. Its JSON payload becomes the step output. It has a deadline: no signal in time, and the step fails and the run compensates.'],
+  ['Operator role', 'Cancelling, retrying a compensation and sending signals need an account with the OPERATOR role (HTTP Basic). Reading and starting runs stay open. The audit trail records the signed-in user.'],
   ['Invariant', 'A rule the stored data must always satisfy, e.g. "a completed step has exactly one successful attempt".'],
 ];
 
@@ -304,8 +310,13 @@ export const CODE_MAP = [
     ['OperationNotAllowedException', 'exception', 'An operator action its current state forbids → 409.', []],
   ]},
   { module: 'flowforge-orchestrator', pkg: 'operator', text: 'Manual interventions, audited.', classes: [
-    ['OperatorService', 'service', 'Cancel and retry, each in one transaction with its audit row.', [['cancel(runId, actor, reason)', 'locks steps then run, WorkflowRun.cancel(), wakes the engine'], ['retryCompensation(runId, actor, reason)', 'reopens the failed undo step with 3 more attempts']]],
+    ['OperatorService', 'service', 'Cancel, retry and signals, each in one transaction with its audit row.', [['cancel(runId, actor, reason)', 'locks steps then run, WorkflowRun.cancel(), wakes the engine'], ['retryCompensation(runId, actor, reason)', 'reopens the failed undo step with 3 more attempts'], ['signal(runId, step, payload, actor, reason)', 'completes a waiting SIGNAL step with the payload as its output']]],
     ['OperatorAction', 'entity', 'Who did what to which run, why, and the status before.', []],
+  ]},
+  { module: 'flowforge-orchestrator', pkg: 'security', text: 'Who may change a run.', classes: [
+    ['SecurityConfig', 'config', 'Stateless HTTP Basic: reading and starting are open; cancel, retry and signals need the OPERATOR role. Refusals are problem details (401, 403).', []],
+    ['SecurityProperties', 'record', 'The users from flowforge.security.users; a password without an {encoding} prefix is plain text, for demos only.', []],
+    ['AuthController', 'REST', '/api/auth/me — who the credentials belong to; the dashboard signs in with it.', []],
   ]},
   { module: 'flowforge-orchestrator', pkg: 'definition', text: 'Workflow recipes.', classes: [
     ['WorkflowDefinition', 'entity', 'Name, version, ordered steps.', [['addStep(name, type, maxAttempts, compensationType)', '']]],
@@ -327,7 +338,8 @@ export const CODE_MAP = [
     ['StepAttempt', 'entity', 'One try: number, status, start/finish, error. Appended, never overwritten.', [['finish(outcome, error, now)', '']]],
     ['RunStatus / StepStatus / AttemptStatus / StepKind', 'enums', 'States and their allowed transitions (canTransitionTo, isTerminal). StepKind is FORWARD or COMPENSATION.', []],
     ['StaleAttemptException / IllegalStateTransitionException', 'exceptions', 'A result for an old attempt; a forbidden state change.', []],
-    ['WorkflowRunService', 'service', 'start(name, input) and find(runId).', []],
+    ['WorkflowRunService', 'service', 'Starts runs and loads them.', [['start(name, input, idempotencyKey)', 'creates the run, or returns the one the key already started (replayed); a key reused for another input is refused'], ['find(runId)', '']]],
+    ['RunStarter', 'component', 'Settles the race of two requests with one new key: the unique index lets one insert; the loser finds the winner.', []],
     ['StepExecutionRepository', 'repository', 'The locking queries.', [['lockClaimable(now, limit)', 'SKIP LOCKED'], ['findExpiredLeaseIds(cutoff, limit)', ''], ['findByIdForUpdate(id)', 'pessimistic row lock']]],
   ]},
   { module: 'flowforge-orchestrator', pkg: 'engine', text: 'The background loops that drive execution.', classes: [

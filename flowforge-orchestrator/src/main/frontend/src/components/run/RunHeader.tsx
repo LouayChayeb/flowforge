@@ -1,4 +1,5 @@
-import { Ban, Braces, ExternalLink, RotateCcw } from 'lucide-react'
+import { Ban, Braces, CheckCheck, ExternalLink, RotateCcw } from 'lucide-react'
+import type { OperatorAction } from './OperatorDialog'
 import { Html, KeyValues, Panel, StatusBadge } from '@/components/common'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { RUN_STATES } from '@/lib/knowledge'
@@ -62,7 +63,7 @@ function PaymentsLine({ payments }: { payments: Payments | null }) {
 export function RunHeader({ run, payments, onOperator }: {
   run: Run
   payments: Payments | null
-  onOperator: (kind: 'cancel' | 'retry') => void
+  onOperator: (action: OperatorAction) => void
 }) {
   const { config } = useStore()
   const now = useNow(500)
@@ -70,6 +71,7 @@ export function RunHeader({ run, payments, onOperator }: {
   const traceUrl = run.traceId && config?.traceUrl ? config.traceUrl.replace('{traceId}', run.traceId) : null
   const canCancel = run.status === 'RUNNING' && !run.cancelRequestedAt
   const actions = run.operatorActions ?? []
+  const awaiting = run.steps.filter((s) => s.type === 'SIGNAL' && s.kind === 'FORWARD' && s.status === 'PENDING' && s.nextAttemptAt)
 
   return (
     <Panel
@@ -78,14 +80,20 @@ export function RunHeader({ run, payments, onOperator }: {
       hint={<StatusBadge status={run.status} size="lg" />}
       actions={
         <>
+          {awaiting.map((s) => (
+            <Button key={s.stepExecutionId} size="sm" onClick={() => onOperator({ kind: 'signal', step: s.name })}
+              title={`Deliver the ${s.name} signal: POST /api/runs/{id}/signals/${s.name}`}>
+              <CheckCheck /> Approve: {s.name}
+            </Button>
+          ))}
           {canCancel && (
-            <Button variant="outline" size="sm" onClick={() => onOperator('cancel')}
+            <Button variant="outline" size="sm" onClick={() => onOperator({ kind: 'cancel' })}
               className="border-s-failed/40 text-s-failed hover:bg-s-failed/10 hover:text-s-failed">
               <Ban /> Cancel run
             </Button>
           )}
           {run.status === 'COMPENSATION_FAILED' && (
-            <Button size="sm" onClick={() => onOperator('retry')}><RotateCcw /> Retry compensation</Button>
+            <Button size="sm" onClick={() => onOperator({ kind: 'retry' })}><RotateCcw /> Retry compensation</Button>
           )}
           {traceUrl && (
             <a href={traceUrl} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'ghost', size: 'sm' })}
@@ -103,6 +111,7 @@ export function RunHeader({ run, payments, onOperator }: {
         <KeyValues rows={[
           ['Run id', <span className="font-mono text-xs">{run.runId}</span>],
           ['Workflow', `${run.workflow} v${run.version}`],
+          ...(run.idempotencyKey ? [['Idempotency key', <span className="font-mono text-xs" title="A second start with this key returns this run instead of starting another">{run.idempotencyKey}</span>] as [string, React.ReactNode]] : []),
           ['Started', <>{fmtClock(run.createdAt)} <span className="text-xs text-muted-foreground">({ago(run.createdAt, now)})</span></>],
           ['Finished', run.completedAt ? fmtClock(run.completedAt) : <span className="text-muted-foreground">not yet</span>],
           ['Duration', <span className="tabular-nums">{fmtDur(end - ms(run.createdAt)!)}</span>],
@@ -113,7 +122,7 @@ export function RunHeader({ run, payments, onOperator }: {
             <div className="space-y-1.5">
               {actions.map((a) => (
                 <div key={a.performedAt} className="text-sm">
-                  <b>{a.action === 'CANCEL' ? 'Cancel' : 'Retry compensation'}</b> by {a.actor} at {fmtClock(a.performedAt)}
+                  <b>{a.action === 'CANCEL' ? 'Cancel' : a.action === 'SIGNAL' ? 'Signal' : 'Retry compensation'}</b> by {a.actor} at {fmtClock(a.performedAt)}
                   <span className="text-muted-foreground"> (was {a.runStatusBefore.toLowerCase().replaceAll('_', ' ')})</span>
                   {a.reason && <div className="text-xs text-muted-foreground italic">“{a.reason}”</div>}
                 </div>

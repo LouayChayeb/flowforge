@@ -1,10 +1,11 @@
-import { Keyboard, Moon, Search, Sparkles, Sun } from 'lucide-react'
+import { KeyRound, Keyboard, LogOut, Moon, Search, Sparkles, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TextShimmer } from '@/components/ui/text-shimmer'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useAuth } from '@/lib/auth'
 import { useStore, type View } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
@@ -18,6 +19,7 @@ export function Header({ dark, onTheme, onPalette, onTour, onShortcuts }: {
   onShortcuts: () => void
 }) {
   const { view, setView, guide, setGuide, connected, stats, rates } = useStore()
+  const { session, signOut } = useAuth()
   const busy = (rates.claimed ?? 0) > 0.05
 
   return (
@@ -44,6 +46,15 @@ export function Header({ dark, onTheme, onPalette, onTour, onShortcuts }: {
             className="hidden h-8 items-center gap-2 rounded-lg border bg-muted/40 px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted md:flex">
             <Search className="size-3.5" /> Search or jump to… <Kbd>Ctrl K</Kbd>
           </button>
+          {session && (
+            <span className="flex items-center gap-1.5 rounded-full border border-s-completed/40 bg-s-completed/10 py-0.5 pr-1 pl-2 text-xs"
+              title={`Signed in with the roles ${session.roles.join(', ')}: operator actions are allowed`}>
+              <KeyRound className="size-3.5 text-s-completed" /> {session.name}
+              <button onClick={signOut} className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Sign out">
+                <LogOut className="size-3" />
+              </button>
+            </span>
+          )}
           <label className="flex cursor-pointer items-center gap-2 px-1.5 text-xs text-muted-foreground" title="Show the explanation boxes everywhere (g)">
             <Switch checked={guide} onCheckedChange={setGuide} size="sm" /> Guide
           </label>

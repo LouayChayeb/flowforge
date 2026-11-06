@@ -41,7 +41,19 @@ export const COOLING_OFF: WorkflowDefinition = {
   ],
 }
 
-const DEFINITIONS = new Map([ORDER_PROCESSING, COOLING_OFF].map((d) => [d.name, d]))
+/** The order needs a manager's approval before the card is charged: a SIGNAL step, with 2 minutes to answer. */
+export const WITH_APPROVAL: WorkflowDefinition = {
+  name: 'order-with-approval',
+  steps: [
+    ...ORDER_PROCESSING.steps.slice(0, 3),
+    { name: 'manager-approval', type: 'SIGNAL', waitFor: 'PT2M', dependsOn: ['reserve-inventory', 'check-fraud'] },
+    { name: 'charge-payment', type: 'CHARGE_PAYMENT', compensateWith: 'REFUND_PAYMENT', maxAttempts: 5, dependsOn: ['manager-approval'] },
+    { name: 'create-shipment', type: 'CREATE_SHIPMENT' },
+    { name: 'send-confirmation', type: 'SEND_CONFIRMATION' },
+  ],
+}
+
+const DEFINITIONS = new Map([ORDER_PROCESSING, COOLING_OFF, WITH_APPROVAL].map((d) => [d.name, d]))
 
 export interface Scenario {
   id: string
@@ -80,6 +92,9 @@ export const SCENARIOS: Scenario[] = [
   { id: 'cooling', title: 'Cooling-off order', expect: 'CANCELLED', workflow: COOLING_OFF.name,
     text: 'After the charge, a durable 20 s timer runs before shipping. Press Cancel run during the wait: the charge is refunded and the stock released.',
     input: {} },
+  { id: 'approval', title: 'Manager approval', expect: 'COMPLETED', workflow: WITH_APPROVAL.name,
+    text: 'The order waits for a signal before the card is charged. Open it and press Approve (sign in as an operator), or let the 2-minute deadline pass and watch it undo itself.',
+    input: {} },
   { id: 'slow', title: 'Slow shipment', expect: 'COMPLETED',
     text: 'Shipping takes 8 s. Watch the lease count down on the Engine tab — or kill the worker running it (see the Kafka tab).',
     input: { shipmentDelayMs: 8000 } },
@@ -104,6 +119,7 @@ export function scenarioOf(input: Input | null | undefined, workflow?: string): 
   const i = input ?? {}
   const truthy = (v: unknown) => v === true || v === 'true'
   if (workflow === COOLING_OFF.name) return 'Cooling-off order'
+  if (workflow === WITH_APPROVAL.name) return 'Manager approval'
   if (truthy(i.refundFails)) return 'Refund fails too'
   if (truthy(i.fraud)) return 'Fraud detected'
   if (Number(i.shipmentFailures) >= 3) return 'Carrier down'
@@ -144,8 +160,27 @@ export interface RunCreated {
   status: RunStatus
 }
 
+/**
+ * Starts a run. The order id is sent as the Idempotency-Key, so submitting the same order twice — a double click, a
+ * retry after a timeout — returns the run it already started (`replayed`) instead of charging the customer twice.
+ */
 export async function startRun(input: Input, workflow = WORKFLOW) {
   const registeredVersion = await ensureWorkflow(workflow)
-  const created = await post<RunCreated>(`/api/workflows/${workflow}/runs`, { input })
-  return { created, registeredVersion }
+  const key = typeof input.orderId === 'string' && input.orderId ? input.orderId : null
+  const response = await fetch(`/api/workflows/${workflow}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) },
+    body: JSON.stringify({ input }),
+  })
+  if (!response.ok) {
+    let problem = null
+    try {
+      problem = await response.json()
+    } catch {
+      // not JSON
+    }
+    throw new ApiError(response.status, problem)
+  }
+  const created = (await response.json()) as RunCreated
+  return { created, registeredVersion, replayed: response.headers.get('Idempotent-Replayed') === 'true' }
 }

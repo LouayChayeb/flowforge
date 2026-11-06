@@ -68,7 +68,13 @@ class ConcurrencyStressTest extends IntegrationTest {
     private static final double DELAY_PROBABILITY = 0.25;
     private static final int MAX_DELAY_MILLIS = 2_000;
     private static final double DUPLICATE_PROBABILITY = 0.2;
-    private static final int MAX_ATTEMPTS = 20;
+    /*
+     * Headroom, not leniency: delayed reports sleep on a worker's consumer thread, so bursts queue commands past their
+     * 1.5 s lease and steps time out repeatedly. With 20 attempts an unlucky step now and then ran out on a slow CI
+     * runner (every invariant intact, but the run FAILED instead of COMPLETED); 40 keeps the final statuses
+     * deterministic while the chaos stays as hostile.
+     */
+    private static final int MAX_ATTEMPTS = 40;
 
     @Autowired
     WorkflowDefinitionService definitions;
@@ -130,7 +136,7 @@ class ConcurrencyStressTest extends IntegrationTest {
             }
             pool.submit(() -> injectStaleResults(workflow, injected));
 
-            await().atMost(Duration.ofMinutes(3)).pollInterval(Duration.ofMillis(500))
+            await().atMost(Duration.ofMinutes(5)).pollInterval(Duration.ofMillis(500))
                     .until(() -> unfinishedRuns(workflow) == 0 || !unexpected.isEmpty());
         } finally {
             stop.set(true);

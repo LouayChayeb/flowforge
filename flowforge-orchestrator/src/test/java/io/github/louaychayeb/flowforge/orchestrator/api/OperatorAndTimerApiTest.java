@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -26,6 +27,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.startsWith;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -36,6 +38,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * shape of the error responses.
  */
 class OperatorAndTimerApiTest extends IntegrationTest {
+
+    /** The demo operator from application.yml: operator actions need the OPERATOR role. */
+    static final RequestPostProcessor OPERATOR = httpBasic("operator", "flowforge");
 
     @Autowired
     MockMvc mvc;
@@ -103,12 +108,12 @@ class OperatorAndTimerApiTest extends IntegrationTest {
         UUID runId = runService.start(workflow, Map.of()).getId();
         awaitTimerScheduled(runId);
 
-        mvc.perform(post("/api/runs/{id}/cancel", runId).header("X-Actor", "alice")
+        mvc.perform(post("/api/runs/{id}/cancel", runId).with(OPERATOR)
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\": \"customer changed their mind\"}"))
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.cancelRequestedAt").exists())
                 .andExpect(jsonPath("$.operatorActions[0].action").value("CANCEL"))
-                .andExpect(jsonPath("$.operatorActions[0].actor").value("alice"))
+                .andExpect(jsonPath("$.operatorActions[0].actor").value("operator"))
                 .andExpect(jsonPath("$.operatorActions[0].reason").value("customer changed their mind"));
 
         RunResponse run = awaitTerminal(runId);
@@ -119,7 +124,7 @@ class OperatorAndTimerApiTest extends IntegrationTest {
         assertThat(checker.check(workflow).violations()).isEmpty();
 
         // A finished run cannot be cancelled again: a clear 409 with a stable code.
-        mvc.perform(post("/api/runs/{id}/cancel", runId))
+        mvc.perform(post("/api/runs/{id}/cancel", runId).with(OPERATOR))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("OPERATION_NOT_ALLOWED"))
                 .andExpect(jsonPath("$.status").value(409))
@@ -138,7 +143,7 @@ class OperatorAndTimerApiTest extends IntegrationTest {
 
         // The cause is fixed (say, the payment provider is back); an operator retries.
         TestStepHandlers.UNDO_ALLOWED.set(true);
-        mvc.perform(post("/api/runs/{id}/retry", runId).header("X-Actor", "bob"))
+        mvc.perform(post("/api/runs/{id}/retry", runId).with(OPERATOR))
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.status").value("COMPENSATING"))
                 .andExpect(jsonPath("$.operatorActions[0].action").value("RETRY_COMPENSATION"))
@@ -159,7 +164,7 @@ class OperatorAndTimerApiTest extends IntegrationTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("RUN_NOT_FOUND"))
                 .andExpect(jsonPath("$.runId").value(unknown.toString()));
-        mvc.perform(post("/api/runs/{id}/retry", unknown))
+        mvc.perform(post("/api/runs/{id}/retry", unknown).with(OPERATOR))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/runs").param("status", "SLEEPING"))
                 .andExpect(status().isBadRequest())

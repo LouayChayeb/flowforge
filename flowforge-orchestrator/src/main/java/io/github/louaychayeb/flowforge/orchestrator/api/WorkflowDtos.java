@@ -72,4 +72,8 @@ public final class WorkflowDtos {
     /** Body of an operator action; the reason is kept in the run's audit log. */
     public record OperatorActionRequest(@Size(max = 500) String reason) {
     }
+
+    /** A signal for a waiting SIGNAL step: its payload becomes the step's output, handed to every later step. */
+    public record SignalRequest(Map<String, Object> payload, @Size(max = 500) String reason) {
+    }
 }

@@ -81,3 +81,11 @@ management:
     enable:
       # The engine loops tick every few hundred milliseconds; tracing each tick would bury the traces that matter.
       tasks.scheduled: false
+# Who may cancel runs, retry their compensation and deliver signals (see SecurityConfig). The default operator
+# is for local demos only: set FLOWFORGE_OPERATOR_PASSWORD (a {bcrypt} hash in production) to change it.
+flowforge:
+  security:
+    users:
+      - name: ${FLOWFORGE_OPERATOR_NAME:operator}
+        password: ${FLOWFORGE_OPERATOR_PASSWORD:flowforge}
+        roles: [OPERATOR]

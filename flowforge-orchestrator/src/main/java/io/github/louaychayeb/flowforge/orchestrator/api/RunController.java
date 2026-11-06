@@ -2,6 +2,7 @@ package io.github.louaychayeb.flowforge.orchestrator.api;
 
 import io.github.louaychayeb.flowforge.orchestrator.api.RunDtos.RunResponse;
 import io.github.louaychayeb.flowforge.orchestrator.api.WorkflowDtos.OperatorActionRequest;
+import io.github.louaychayeb.flowforge.orchestrator.api.WorkflowDtos.SignalRequest;
 import io.github.louaychayeb.flowforge.orchestrator.insight.InsightQueries;
 import io.github.louaychayeb.flowforge.orchestrator.operator.OperatorActionRepository;
 import io.github.louaychayeb.flowforge.orchestrator.operator.OperatorService;
@@ -9,11 +10,11 @@ import io.github.louaychayeb.flowforge.orchestrator.run.RunStatus;
 import io.github.louaychayeb.flowforge.orchestrator.run.WorkflowRunService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -26,9 +27,6 @@ import java.util.UUID;
 public class RunController {
 
     private static final int MAX_LIMIT = 200;
-    /** Who performed an operator action, from the {@code X-Actor} header; a real deployment takes it from auth. */
-    static final String ACTOR_HEADER = "X-Actor";
-    private static final int MAX_ACTOR_LENGTH = 100;
 
     private final WorkflowRunService runService;
     private final OperatorService operators;
@@ -67,10 +65,9 @@ public class RunController {
      * ends {@code CANCELLED}. {@code 202}: the winding down happens afterwards. {@code 409} if it already finished.
      */
     @PostMapping("/{runId}/cancel")
-    public ResponseEntity<RunResponse> cancel(@PathVariable UUID runId,
-                                              @RequestHeader(value = ACTOR_HEADER, required = false) String actor,
+    public ResponseEntity<RunResponse> cancel(@PathVariable UUID runId, Authentication operator,
                                               @Valid @RequestBody(required = false) OperatorActionRequest request) {
-        operators.cancel(runId, actor(actor), request == null ? null : request.reason());
+        operators.cancel(runId, operator.getName(), request == null ? null : request.reason());
         return ResponseEntity.accepted().body(get(runId));
     }
 
@@ -79,18 +76,23 @@ public class RunController {
      * it is back. {@code 409} for a run in any other state.
      */
     @PostMapping("/{runId}/retry")
-    public ResponseEntity<RunResponse> retry(@PathVariable UUID runId,
-                                             @RequestHeader(value = ACTOR_HEADER, required = false) String actor,
+    public ResponseEntity<RunResponse> retry(@PathVariable UUID runId, Authentication operator,
                                              @Valid @RequestBody(required = false) OperatorActionRequest request) {
-        operators.retryCompensation(runId, actor(actor), request == null ? null : request.reason());
+        operators.retryCompensation(runId, operator.getName(), request == null ? null : request.reason());
         return ResponseEntity.accepted().body(get(runId));
     }
 
-    private static String actor(String header) {
-        if (header == null || header.isBlank()) {
-            return "anonymous";
-        }
-        String trimmed = header.strip();
-        return trimmed.length() <= MAX_ACTOR_LENGTH ? trimmed : trimmed.substring(0, MAX_ACTOR_LENGTH);
+    /**
+     * Delivers the signal the run's {@code SIGNAL} step of that name is waiting for — an approval, a webhook's news —
+     * completing the step with the payload as its output. {@code 202}: the steps after it run afterwards. {@code 404}
+     * for no such signal step, {@code 409} when it is not waiting right now (too early, already signalled, timed out).
+     */
+    @PostMapping("/{runId}/signals/{step}")
+    public ResponseEntity<RunResponse> signal(@PathVariable UUID runId, @PathVariable String step,
+                                              Authentication operator,
+                                              @Valid @RequestBody(required = false) SignalRequest request) {
+        operators.signal(runId, step, request == null ? null : request.payload(), operator.getName(),
+                request == null ? null : request.reason());
+        return ResponseEntity.accepted().body(get(runId));
     }
 }

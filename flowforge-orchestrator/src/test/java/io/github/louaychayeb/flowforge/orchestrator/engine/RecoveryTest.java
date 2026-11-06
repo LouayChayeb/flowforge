@@ -48,7 +48,7 @@ class RecoveryTest extends IntegrationTest {
         UUID runId = startRun(new NewStep("only", TestStepHandlers.OK, null));
 
         // The claim commits, then the orchestrator "dies" before publishing anything.
-        dispatcher.dispatchOnce();
+        dispatchUntilClaimed(runId);
         assertThat(load(runId).steps().get(0).status()).isEqualTo(StepStatus.RUNNING);
         assertThat(outbox.findByMessageKeyAndPublishedAtIsNull(runId.toString()))
                 .as("the command is durable in the outbox").hasSize(1);
@@ -64,7 +64,7 @@ class RecoveryTest extends IntegrationTest {
     @Test
     void retriesStepsWhoseResultNeverArrives() {
         UUID runId = startRun(new NewStep("lost", TestStepHandlers.OK, 3));
-        dispatcher.dispatchOnce();
+        dispatchUntilClaimed(runId);
 
         // The command is lost: no worker will ever answer attempt 1.
         List<OutboxEvent> pending = outbox.findByMessageKeyAndPublishedAtIsNull(runId.toString());
@@ -90,7 +90,7 @@ class RecoveryTest extends IntegrationTest {
                 new NewStep("second", TestStepHandlers.OK, null));
         UUID poisoned = load(poisonedRun).steps().get(1).stepExecutionId();
         UUID healthyRun = startRun(new NewStep("lost", TestStepHandlers.OK, 3));
-        dispatcher.dispatchOnce();
+        dispatchUntilClaimed(healthyRun);
         outbox.deleteAll(outbox.findByMessageKeyAndPublishedAtIsNull(healthyRun.toString()));
         // Corrupt state recovery cannot handle: a RUNNING step that is not the run's current step, with no attempt.
         jdbc.update("UPDATE step_execution SET status = 'RUNNING', lease_expires_at = now() - interval '1 hour' "
@@ -148,6 +148,20 @@ class RecoveryTest extends IntegrationTest {
      * Treats every lease as expired and recovers until nothing is left, like the recovery loop does. One call handles
      * a single batch, and steps left over by earlier tests in the shared database could fill it.
      */
+    /**
+     * Dispatches until the run's first step is claimed. Earlier tests in the same database can leave due steps behind;
+     * a single dispatch batch may be spent on those, so one call is not enough to be sure ours was claimed.
+     */
+    private void dispatchUntilClaimed(UUID runId) {
+        for (int pass = 0; pass < 100; pass++) {
+            if (load(runId).steps().get(0).status() == StepStatus.RUNNING) {
+                return;
+            }
+            dispatcher.dispatchOnce();
+        }
+        assertThat(load(runId).steps().get(0).status()).as("the step was claimed").isEqualTo(StepStatus.RUNNING);
+    }
+
     private int recoverEverything() {
         Instant cutoff = Instant.now().plus(Duration.ofHours(1));
         int total = 0;

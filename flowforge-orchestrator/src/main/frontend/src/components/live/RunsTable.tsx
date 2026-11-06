@@ -48,7 +48,8 @@ export function RunsTable() {
       hint="click a run to open it · j / k to move"
       contentClassName="p-0 space-y-0"
       actions={
-        <Select value={filter || 'ALL'} onValueChange={(v) => setFilter(v === 'ALL' ? '' : (v as RunStatus))}>
+        <Select value={filter || 'ALL'} onValueChange={(v) => setFilter(v === 'ALL' ? '' : (v as RunStatus))}
+          items={[{ value: 'ALL', label: 'All statuses' }, ...RUN_STATUS_ORDER.map((s) => ({ value: s, label: humanize(s) }))]}>
           <SelectTrigger size="sm" className="w-44"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All statuses</SelectItem>

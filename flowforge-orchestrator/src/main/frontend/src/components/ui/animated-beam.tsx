@@ -28,6 +28,9 @@ export interface AnimatedBeamProps {
   startYOffset?: number
   endXOffset?: number
   endYOffset?: number
+  /** Where on each element the beam starts / ends, as fractions of its box; [0.5, 0.5] is the centre. */
+  startAnchor?: [number, number]
+  endAnchor?: [number, number]
 }
 
 interface Geometry {
@@ -57,8 +60,9 @@ export const AnimatedBeam: React.FC<AnimatedBeamProps> = ({
   startYOffset = 0,
   endXOffset = 0,
   endYOffset = 0,
+  startAnchor = [0.5, 0.5],
+  endAnchor = [0.5, 0.5],
 }) => {
-  const id = useId()
   const [geometry, setGeometry] = useState<Geometry | null>(null)
 
   useEffect(() => {
@@ -67,10 +71,10 @@ export const AnimatedBeam: React.FC<AnimatedBeamProps> = ({
       const containerRect = containerRef.current.getBoundingClientRect()
       const rectA = fromRef.current.getBoundingClientRect()
       const rectB = toRef.current.getBoundingClientRect()
-      const startX = rectA.left - containerRect.left + rectA.width / 2 + startXOffset
-      const startY = rectA.top - containerRect.top + rectA.height / 2 + startYOffset
-      const endX = rectB.left - containerRect.left + rectB.width / 2 + endXOffset
-      const endY = rectB.top - containerRect.top + rectB.height / 2 + endYOffset
+      const startX = rectA.left - containerRect.left + rectA.width * startAnchor[0] + startXOffset
+      const startY = rectA.top - containerRect.top + rectA.height * startAnchor[1] + startYOffset
+      const endX = rectB.left - containerRect.left + rectB.width * endAnchor[0] + endXOffset
+      const endY = rectB.top - containerRect.top + rectB.height * endAnchor[1] + endYOffset
       const controlY = startY - curvature
       setGeometry({
         d: `M ${startX},${startY} Q ${(startX + endX) / 2},${controlY} ${endX},${endY}`,
@@ -85,13 +89,55 @@ export const AnimatedBeam: React.FC<AnimatedBeamProps> = ({
     if (containerRef.current) resizeObserver.observe(containerRef.current)
     updatePath()
     return () => resizeObserver.disconnect()
-  }, [containerRef, fromRef, toRef, curvature, startXOffset, startYOffset, endXOffset, endYOffset])
+  }, [containerRef, fromRef, toRef, curvature, startXOffset, startYOffset, endXOffset, endYOffset, startAnchor[0], startAnchor[1], endAnchor[0], endAnchor[1]])
 
   if (!geometry) return null
 
+  return (
+    <svg
+      fill="none"
+      width={geometry.width}
+      height={geometry.height}
+      xmlns="http://www.w3.org/2000/svg"
+      className={cn("pointer-events-none absolute top-0 left-0 transform-gpu stroke-2", className)}
+      viewBox={`0 0 ${geometry.width} ${geometry.height}`}
+    >
+      <AnimatedBeamPath d={geometry.d} start={geometry.start} end={geometry.end} pathColor={pathColor} pathWidth={pathWidth}
+        pathOpacity={pathOpacity} gradientStartColor={gradientStartColor} gradientStopColor={gradientStopColor}
+        delay={delay} duration={duration} repeat={repeat} repeatDelay={repeatDelay} />
+    </svg>
+  )
+}
+
+export interface AnimatedBeamPathProps {
+  /** The path, in the coordinates of the <svg> it is drawn in. */
+  d: string
+  start: [number, number]
+  end: [number, number]
+  pathColor?: string
+  pathWidth?: number
+  pathOpacity?: number
+  gradientStartColor?: string
+  gradientStopColor?: string
+  delay?: number
+  duration?: number
+  repeat?: number
+  repeatDelay?: number
+  className?: string
+}
+
+/**
+ * The beam itself, for a path you already know: drawn inside an existing <svg>, in its coordinates, so it can never
+ * drift from the line it follows — nothing is measured in the DOM.
+ */
+export function AnimatedBeamPath({
+  d, start, end, pathColor = "gray", pathWidth = 2, pathOpacity = 0.2, gradientStartColor = "#ffaa40",
+  gradientStopColor = "#9c40ff", delay = 0, duration = 2.4, repeat = Infinity, repeatDelay = 0, className,
+}: AnimatedBeamPathProps) {
+  const id = useId()
   // Sweep a short bright band from the start of the beam to its end, along its main axis.
-  const [sx, sy] = geometry.start
-  const [ex, ey] = geometry.end
+  const [sx, sy] = start
+  const [ex, ey] = end
   const vertical = Math.abs(ey - sy) > Math.abs(ex - sx)
   const sweep = (a: number, b: number) => {
     const length = b - a
@@ -108,16 +154,9 @@ export const AnimatedBeam: React.FC<AnimatedBeamProps> = ({
       })()
 
   return (
-    <svg
-      fill="none"
-      width={geometry.width}
-      height={geometry.height}
-      xmlns="http://www.w3.org/2000/svg"
-      className={cn("pointer-events-none absolute top-0 left-0 transform-gpu stroke-2", className)}
-      viewBox={`0 0 ${geometry.width} ${geometry.height}`}
-    >
-      <path d={geometry.d} stroke={pathColor} strokeWidth={pathWidth} strokeOpacity={pathOpacity} strokeLinecap="round" />
-      <path d={geometry.d} strokeWidth={pathWidth} stroke={`url(#${id})`} strokeOpacity="1" strokeLinecap="round" />
+    <g className={cn("pointer-events-none", className)} fill="none">
+      <path d={d} stroke={pathColor} strokeWidth={pathWidth} strokeOpacity={pathOpacity} strokeLinecap="round" />
+      <path d={d} strokeWidth={pathWidth} stroke={`url(#${id})`} strokeOpacity="1" strokeLinecap="round" />
       <defs>
         <motion.linearGradient
           className="transform-gpu"
@@ -134,6 +173,6 @@ export const AnimatedBeam: React.FC<AnimatedBeamProps> = ({
           <stop offset="100%" style={{ stopColor: gradientStopColor, stopOpacity: 0 }} />
         </motion.linearGradient>
       </defs>
-    </svg>
+    </g>
   )
 }

@@ -134,8 +134,12 @@ public class KafkaInspector {
                 long end = ends.get(tp).offset();
                 OffsetAndMetadata offset = committed.get(tp);
                 long done = offset == null ? 0 : offset.offset();
-                partitions.add(new PartitionLag(info.partition(), done, end, end - done, owners.get(info.partition())));
-                lag += end - done;
+                // The end offsets were read first: on a busy topic the group can commit past them before its offsets
+                // are read. That is a stale snapshot, not a consumer ahead of the log — the lag then is 0.
+                long behind = Math.max(0, end - done);
+                partitions.add(new PartitionLag(info.partition(), done, Math.max(end, done), behind,
+                        owners.get(info.partition())));
+                lag += behind;
             }
             partitions.sort(Comparator.comparingInt(PartitionLag::partition));
         }

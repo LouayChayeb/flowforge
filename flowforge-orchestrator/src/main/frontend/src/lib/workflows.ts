@@ -85,9 +85,16 @@ export const SCENARIOS: Scenario[] = [
     input: { shipmentDelayMs: 8000 } },
 ]
 
+let sequence = 0
+
+/**
+ * A demo order with a unique id: time-based, plus a per-page counter, so two orders never share an id — the payment
+ * provider would count two runs for one order id as that order charged twice.
+ */
 export function orderInput(extra: Input): Input {
-  const n = Math.floor(1000 + Math.random() * 9000)
-  const input: Input = { orderId: `ORD-${n}`, customerId: `CUS-${n % 97}`, amount: 120, country: 'FR', ...extra }
+  const id = `${Date.now().toString(36).slice(-5)}${(sequence++ % 1296).toString(36).padStart(2, '0')}`.toUpperCase()
+  const customer = Math.floor(Math.random() * 97)
+  const input: Input = { orderId: `ORD-${id}`, customerId: `CUS-${customer}`, amount: 120, country: 'FR', ...extra }
   for (const key of Object.keys(input)) if (input[key] === null) delete input[key]
   return input
 }

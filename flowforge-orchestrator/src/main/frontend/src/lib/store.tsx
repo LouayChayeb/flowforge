@@ -84,11 +84,20 @@ function usePoll(fn: () => Promise<void>, intervalMs: number) {
   }, [intervalMs])
 }
 
+/** The location hash: "#engine", or "#run/<runId>" for a link straight to one run. */
+function readHash(): { view: View; runId: string | null } {
+  const [view, runId] = location.hash.slice(1).split('/')
+  return { view: VIEWS.includes(view as View) ? (view as View) : 'live', runId: runId || null }
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [view, setViewState] = useState<View>(() => (location.hash.slice(1) as View) || 'live')
-  const [runId, setRunId] = useState<string | null>(null)
+  const [view, setViewState] = useState<View>(() => readHash().view)
+  const [runId, setRunId] = useState<string | null>(() => readHash().runId)
+  const currentRun = useRef(runId)
   const [filter, setFilter] = useState<RunStatus | ''>('')
-  const [guide, setGuideState] = useState(() => stored('ff-guide', 'on') !== 'off')
+  // ?guide=off hides the explanation boxes for this visit, e.g. for screenshots.
+  const [guide, setGuideState] = useState(() =>
+    new URLSearchParams(location.search).get('guide') !== 'off' && stored('ff-guide', 'on') !== 'off')
   const [connected, setConnected] = useState(false)
   const [stats, setStats] = useState<Stats | null>(null)
   const [rates, setRates] = useState<Partial<Rates>>({})
@@ -104,7 +113,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const setView = useCallback((next: View) => {
     setViewState(next)
-    history.replaceState(null, '', `#${next}`)
+    const hash = next === 'run' && currentRun.current ? `#run/${currentRun.current}` : `#${next}`
+    history.replaceState(null, '', `${location.pathname}${location.search}${hash}`)
   }, [])
 
   const setGuide = useCallback((on: boolean) => {
@@ -113,8 +123,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const openRun = useCallback((id: string, { switchView = true } = {}) => {
+    currentRun.current = id
     setRunId(id)
     if (switchView) setView('run')
+    else if (location.hash.startsWith('#run')) history.replaceState(null, '', `${location.pathname}${location.search}#run/${id}`)
   }, [setView])
 
   const pollStats = useCallback(async () => {

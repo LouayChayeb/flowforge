@@ -1,8 +1,8 @@
 import {
   Cpu, Database, Globe, Inbox, RadioTower, RotateCcw, Send, ShieldCheck, Zap, type LucideIcon,
 } from 'lucide-react'
-import { createRef, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
-import { AnimatedBeam } from '@/components/ui/animated-beam'
+import { useMemo, useState, type CSSProperties } from 'react'
+import { AnimatedBeamPath } from '@/components/ui/animated-beam'
 import { sum } from '@/lib/format'
 import { useStore, type Rates } from '@/lib/store'
 import { cn } from '@/lib/utils'
@@ -79,7 +79,6 @@ const EDGES: Edge[] = [
 ]
 
 const size = (n: DiagramNode) => ({ w: n.w ?? 170, h: n.h ?? 64 })
-const center = (n: DiagramNode): [number, number] => [n.x + size(n).w / 2, n.y + size(n).h / 2]
 
 /** The first and last point of a path: where the beam starts and ends. */
 function endpoints(d: string): [[number, number], [number, number]] {
@@ -115,18 +114,7 @@ function StepChip({ step, active }: { step: number; active: boolean }) {
 
 export function Diagram({ selected, onSelect }: { selected: string; onSelect: (id: string) => void }) {
   const { rates, rateHistory, stats, kafka, consistency, config } = useStore()
-  const container = useRef<HTMLDivElement>(null)
-  const refs = useMemo(() => Object.fromEntries(NODES.map((n) => [n.id, createRef<HTMLDivElement>()])) as Record<string, RefObject<HTMLDivElement | null>>, [])
-  const [scale, setScale] = useState(1)
   const [hover, setHover] = useState<string | null>(null)
-
-  useEffect(() => {
-    const element = container.current
-    if (!element) return
-    const observer = new ResizeObserver(() => setScale(element.clientWidth / W))
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [])
 
   const metrics = useMemo(() => {
     const m: Record<string, string> = {}
@@ -152,7 +140,6 @@ export function Diagram({ selected, onSelect }: { selected: string; onSelect: (i
     return m
   }, [stats, kafka, consistency, config])
 
-  const byId = useMemo(() => new Map(NODES.map((n) => [n.id, n])), [])
   const rateOf = (key: keyof Rates | null) => (key ? rates[key] ?? 0 : 0)
   const activeEdges = EDGES.filter((e) => rateOf(e.rate) > ACTIVE)
   const activeNodes = new Set(activeEdges.flatMap((e) => [e.from, e.to]))
@@ -164,7 +151,7 @@ export function Diagram({ selected, onSelect }: { selected: string; onSelect: (i
   return (
     <div className="space-y-3">
       <div className="overflow-x-auto overflow-y-hidden py-1">
-        <div ref={container} className="relative min-w-[860px] select-none" style={{ aspectRatio: `${W} / ${H}` }}>
+        <div className="relative min-w-[860px] select-none" style={{ aspectRatio: `${W} / ${H}` }}>
           {/* edges and the messages travelling on the Kafka hops */}
           <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 size-full" aria-hidden>
             <defs>
@@ -184,6 +171,16 @@ export function Diagram({ selected, onSelect }: { selected: string; onSelect: (i
                   strokeDasharray={e.rate === null ? '4 4' : undefined}
                   className={cn('transition-[opacity,stroke] duration-300', active ? 'stroke-primary/60' : 'stroke-muted-foreground/40',
                     faded && 'opacity-15', focusEdges?.has(e.id) && 'stroke-primary')} />
+              )
+            })}
+            {/* Magic UI's beam on every edge carrying traffic right now, drawn along the edge itself */}
+            {activeEdges.map((e) => {
+              const [start, end] = endpoints(e.d)
+              return (
+                <AnimatedBeamPath key={`beam-${e.id}`} d={e.d} start={start} end={end} pathOpacity={0} pathWidth={3}
+                  duration={Math.max(0.6, 2.2 - Math.log10(1 + rateOf(e.rate)))}
+                  gradientStartColor="var(--primary)" gradientStopColor="var(--s-running)"
+                  className={cn('transition-opacity', focusEdges && !focusEdges.has(e.id) && 'opacity-15')} />
               )
             })}
             {activeEdges.filter((e) => e.messages).map((e) => {
@@ -240,7 +237,6 @@ export function Diagram({ selected, onSelect }: { selected: string; onSelect: (i
             return (
               <div
                 key={n.id}
-                ref={refs[n.id]}
                 role="button"
                 tabIndex={0}
                 aria-pressed={isSelected}
@@ -278,33 +274,6 @@ export function Diagram({ selected, onSelect }: { selected: string; onSelect: (i
             )
           })}
 
-          {/* Magic UI beams on every edge that carries traffic right now */}
-          {activeEdges.map((e) => {
-            const from = byId.get(e.from)!
-            const to = byId.get(e.to)!
-            const [[sx, sy], [ex, ey]] = endpoints(e.d)
-            const [fx, fy] = center(from)
-            const [tx, ty] = center(to)
-            const rate = rateOf(e.rate)
-            return (
-              <AnimatedBeam
-                key={`${e.id}-${scale.toFixed(3)}`}
-                containerRef={container}
-                fromRef={refs[e.from]}
-                toRef={refs[e.to]}
-                startXOffset={(sx - fx) * scale}
-                startYOffset={(sy - fy) * scale}
-                endXOffset={(ex - tx) * scale}
-                endYOffset={(ey - ty) * scale}
-                pathOpacity={0}
-                pathWidth={3}
-                duration={Math.max(0.6, 2.2 - Math.log10(1 + rate))}
-                gradientStartColor="var(--primary)"
-                gradientStopColor="var(--s-running)"
-                className={cn('transition-opacity', focusEdges && !focusEdges.has(e.id) && 'opacity-15')}
-              />
-            )
-          })}
         </div>
       </div>
 

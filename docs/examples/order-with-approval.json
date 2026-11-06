@@ -1,0 +1,12 @@
+{
+  "name": "order-with-approval",
+  "steps": [
+    { "name": "validate-order", "type": "VALIDATE_ORDER", "maxAttempts": 1 },
+    { "name": "reserve-inventory", "type": "RESERVE_INVENTORY", "compensateWith": "RELEASE_INVENTORY", "dependsOn": ["validate-order"] },
+    { "name": "check-fraud", "type": "CHECK_FRAUD", "dependsOn": ["validate-order"] },
+    { "name": "manager-approval", "type": "SIGNAL", "waitFor": "PT2M", "dependsOn": ["reserve-inventory", "check-fraud"] },
+    { "name": "charge-payment", "type": "CHARGE_PAYMENT", "compensateWith": "REFUND_PAYMENT", "maxAttempts": 5, "dependsOn": ["manager-approval"] },
+    { "name": "create-shipment", "type": "CREATE_SHIPMENT" },
+    { "name": "send-confirmation", "type": "SEND_CONFIRMATION" }
+  ]
+}

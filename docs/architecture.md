@@ -49,6 +49,12 @@ When a forward step fails terminally, no new forward step starts, and steps alre
 
 **Step outputs.** A successful result may carry a JSON object (≤ 64 KB, else the step fails permanently), stored in `step_execution.output`. Every command carries the outputs of the run's completed forward steps, so a handler can read what an earlier step produced (`StepContext.requireOutput`).
 
+**Signals.** A `SIGNAL` step is a timer turned inside out: when its dependencies complete, its `next_attempt_at` is set to its *deadline*, and it waits for `POST /api/runs/{id}/signals/{step}`. `OperatorService.signal()` locks the run's steps and then the run, checks the step is waiting (`StepExecution.isAwaitingSignal()`), and completes it in one move with the payload as its output, so the steps after it see it like any step output. If the dispatcher claims the step instead, the deadline has passed: `StepStateService.missSignal()` fails it permanently and the run compensates. A signal racing the deadline locks the same step row first, so exactly one of the two applies; the other finds the step no longer waiting (`409`).
+
+**Idempotent starts.** `workflow_run.idempotency_key` has a unique index, and `request_hash` (SHA-256 of the workflow name and the input with sorted keys) records what the key was first used for. A start with a known key returns that run (`200`, `Idempotent-Replayed: true`); one with a different hash is refused (`422`). Two requests with the same new key can both miss the lookup; the index lets one insert, the other's flush fails, and `RunStarter` then loads the winner in a fresh transaction.
+
+**Security.** Spring Security, stateless HTTP Basic, no sessions (so no CSRF). Reading and starting are open; `POST …/cancel`, `…/retry` and `…/signals/*` need the `OPERATOR` role, and the actor written to `operator_action` is the authenticated user. Users are configured in `flowforge.security.users`; refusals are problem details without a `WWW-Authenticate` challenge, so browsers never show their own login popup over the dashboard.
+
 ## Step state machine (Phase 1)
 
 ```mermaid

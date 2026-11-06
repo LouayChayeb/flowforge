@@ -99,10 +99,12 @@ Skip the dashboard build for a faster Java-only build with `-Dskip.installnodenp
 |---|---|---|
 | `POST` | `/api/workflows` | Register a workflow definition; posting an existing name registers its next version |
 | `GET` | `/api/workflows/{name}` | Latest version of a definition |
-| `POST` | `/api/workflows/{name}/runs` | Start a run; returns `202 Accepted` immediately with a `Location` to poll |
+| `POST` | `/api/workflows/{name}/runs` | Start a run; returns `202 Accepted` immediately with a `Location` to poll. With an `Idempotency-Key` header, at most one run per key |
 | `GET` | `/api/runs/{runId}` | Run status, every step's state and the full attempt history |
-| `POST` | `/api/runs/{runId}/cancel` | Cancel a running run: nothing new starts, completed steps are undone, the run ends `CANCELLED` |
-| `POST` | `/api/runs/{runId}/retry` | Retry a compensation that failed (`COMPENSATION_FAILED` → `COMPENSATING`) once the cause is fixed |
+| `POST` | `/api/runs/{runId}/cancel` | Cancel a running run: nothing new starts, completed steps are undone, the run ends `CANCELLED` (operator) |
+| `POST` | `/api/runs/{runId}/retry` | Retry a compensation that failed (`COMPENSATION_FAILED` → `COMPENSATING`) once the cause is fixed (operator) |
+| `POST` | `/api/runs/{runId}/signals/{step}` | Deliver the signal a `SIGNAL` step is waiting for; `{"payload": {…}}` becomes its output (operator) |
+| `GET` | `/api/auth/me` | Who the credentials belong to, and their roles |
 | `GET` | `/api/admin/consistency` | Check the stored history against FlowForge's [invariants](docs/correctness.md); `?workflow=` to narrow it |
 
 Read-only endpoints behind the dashboard:
@@ -117,7 +119,9 @@ Read-only endpoints behind the dashboard:
 | `GET` | `/api/admin/kafka` | Topics, consumer groups, partition ownership and lag |
 | `GET` | `/api/admin/consistency/invariants` | Names and meaning of the ten invariants |
 
-Operator actions take an optional `X-Actor` header and `{"reason": "…"}` body; both are kept in an audit table and returned with the run.
+**Who may do what.** Reading, the dashboard and starting runs are open. The *(operator)* endpoints — acting on a run someone else started — need HTTP Basic credentials with the `OPERATOR` role, and return a problem-details `401` (`AUTHENTICATION_REQUIRED`) or `403` (`ACCESS_DENIED`) otherwise. The audit trail records the signed-in user and the optional `{"reason": "…"}`. Users come from `flowforge.security.users`; the local demo account is `operator` / `flowforge` — set `FLOWFORGE_OPERATOR_PASSWORD` (a `{bcrypt}` hash in production) to change it. The API is stateless: no session, no cookie, so no CSRF.
+
+**Starting a run at most once.** Send an `Idempotency-Key` (1–200 characters, e.g. the order id). The same key again returns the run it already started — `200 OK`, `Idempotent-Replayed: true`, the same `Location` — so a retry after a timeout or a double click never charges the customer twice. The same key with a different workflow or input is refused with `422 IDEMPOTENCY_KEY_REUSED`. Two requests with one new key at the same moment are settled by a unique index: one inserts, the other gets the winner's run.
 
 Errors are RFC 9457 problem details with a stable `code`, a `type` URN, structured details and the `traceId`:
 
@@ -136,10 +140,11 @@ Errors are RFC 9457 problem details with a stable `code`, a `type` URN, structur
 
 Validation failures (`VALIDATION_FAILED`) list every invalid field under `errors`; lock conflicts are `409 CONCURRENT_MODIFICATION` and safe to repeat; unexpected errors are a `500` that never leaks internals.
 
-### Step outputs, timers and cancellation
+### Step outputs, timers, signals and cancellation
 
 - **Outputs.** A handler returns `StepHandlerResult.succeeded(Map.of("reservationId", id))`; the output (at most 64 KB of JSON) is stored on the step and handed to every later step: `context.requireOutput("reserve-inventory", "reservationId")`. That is how the undo step knows what to release.
 - **Durable timers.** A step of type `WAIT` with `"waitFor": "PT20S"` (up to 30 days) pauses the run. Its due time is stored when its dependencies complete; the orchestrator completes it itself — no worker, no Kafka message — so it survives restarts. See [the cooling-off example](docs/examples/order-with-cooling-off.json).
+- **Signals.** A step of type `SIGNAL` with `"waitFor": "PT2M"` waits for an event from outside — a manager's approval, a payment webhook — for up to that long. `POST /api/runs/{id}/signals/{step}` delivers it; its `payload` becomes the step's output, so later steps can read it. No signal by the deadline: the step fails and the run compensates what it did. A signal before the step is due, or a second one, is a `409`. See [the approval example](docs/examples/order-with-approval.json).
 - **Typed failures.** Handlers throw `StepFailureException.Retryable`, `.Permanent` or `.InvalidInput` (a sealed hierarchy) instead of building results by hand; any other exception counts as retryable.
 
 **1. Register a workflow** ([example file](docs/examples/order-processing.json)):
@@ -251,6 +256,9 @@ Every state change is validated (terminal states can never be left), results mus
 | An operator cancels a run mid-way | Eligible steps are withdrawn, running ones finish, then everything that completed is compensated; the run ends `CANCELLED` |
 | A compensation fails for good | The run stops at `COMPENSATION_FAILED`; after fixing the cause an operator retries it, with the earlier attempts kept |
 | The orchestrator restarts during a timer | Nothing is lost: the timer's due time is a column, and any orchestrator fires it once due |
+| The same order is submitted twice (a double click, a client retry) | With an `Idempotency-Key`, the second request gets the first run back; a unique index settles two at the same moment |
+| A signal never comes | The step's deadline passes, it fails, and the run compensates what it did |
+| Someone without the operator role tries to cancel a run | `401` / `403`; nothing changes, and every action that does happen is audited with the signed-in user |
 | A worker charges, then dies before reporting | The charge step runs again with the same idempotency key; the payment provider replays the first charge, so the customer is charged once |
 
 What it does **not** guarantee on its own: an external side effect (a charge, an email) can execute more than once if a worker dies after doing it and before reporting it. Handlers receive a stable `stepExecutionId` to use as an idempotency key with the external system; that is the only way to make such a side effect exactly-once. The demo's simulated payment provider (`flowforge-payments`) shows it working: it stores every key, answers a repeat with the original charge and `Idempotent-Replayed: true`, and its ledger proves no order is ever charged twice.
@@ -357,7 +365,7 @@ flowforge/
 - [x] **Phase 3 — Durability and recovery:** transactional outbox, idempotent consumers, bounded retries with exponential backoff, leases and a recovery sweeper, compensation — plus the [crash-recovery demo](docs/recovery-demo.md)
 - [x] **Phase 4 — Concurrency and correctness:** multiple workers and orchestrators on the same workload; a consistency checker, a lease-race test and a chaos stress test prove no double-claiming and no stale-message corruption — see [docs/correctness.md](docs/correctness.md)
 - [x] **Phase 5 — Deployment and performance:** Docker images, Helm chart, Minikube deployment, throughput/latency measurements, documented guarantees and limits — see [deploy/README.md](deploy/README.md) and [docs/performance.md](docs/performance.md)
-- [x] **Beyond the plan:** a live, explanatory [dashboard](#dashboard); instant dispatch on commit instead of polling ([performance](docs/performance.md#instant-dispatch)); parallel steps with `dependsOn`; a simulated payment provider that proves a step run twice charges once; one OpenTelemetry trace per run, Prometheus metrics and a Grafana dashboard; step outputs, durable timers, operator cancel/retry with an audit trail, and typed errors as RFC 9457 problem details
+- [x] **Beyond the plan:** a live, explanatory [dashboard](#dashboard); instant dispatch on commit instead of polling ([performance](docs/performance.md#instant-dispatch)); parallel steps with `dependsOn`; a simulated payment provider that proves a step run twice charges once; one OpenTelemetry trace per run, Prometheus metrics and a Grafana dashboard; step outputs, durable timers, operator cancel/retry with an audit trail, and typed errors as RFC 9457 problem details; idempotent starts (one run per `Idempotency-Key`), signals that wait for outside events, and operator login with roles
 
 ## License
 

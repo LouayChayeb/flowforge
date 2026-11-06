@@ -19,7 +19,7 @@ FlowForge answers it in three parts: **invariants** that define "correct", a **c
 | `finished-run-is-quiet` | A finished run has nothing running, retrying or eligible |
 | `compensation-targets` | Each compensation undoes a distinct completed step that declared that compensation |
 | `compensated-run-is-compensated` | A `COMPENSATED` run has compensations, and all of them completed; a `CANCELLED` run's compensations all completed too |
-| `command-for-every-attempt` | Every attempt has its step command in the outbox — the claim and the command committed together (timers excepted: they send none) |
+| `command-for-every-attempt` | Every attempt has its step command in the outbox — the claim and the command committed together (timers and signals excepted: they send none) |
 
 The same checks are available on a running system:
 

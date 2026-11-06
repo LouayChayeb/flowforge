@@ -92,6 +92,10 @@ public class StepStateService {
                 fireTimer(step, attempt, now);
                 continue;
             }
+            if (step.isSignal()) {
+                missSignal(step, attempt, now);
+                continue;
+            }
             ClaimedStep claimedStep = new ClaimedStep(
                     step.getRun().getId(),
                     step.getId(),
@@ -124,6 +128,19 @@ public class StepStateService {
         lockRun(step);
         step.complete(attempt.getAttemptNumber(), Map.of("firedAt", now.toString()), now);
         log.info("Timer {} of run {} fired", step.getName(), step.getRun().getId());
+        recordTimings(step);
+        announceReadySteps(step.getRun(), now);
+    }
+
+    /**
+     * A signal step becomes claimable only at its deadline, so claiming one means its signal never came: it fails for
+     * good and the run compensates. A signal racing the deadline locks the same step row first; whichever commits
+     * first wins, and the other finds the step no longer waiting.
+     */
+    private void missSignal(StepExecution step, StepAttempt attempt, Instant now) {
+        lockRun(step);
+        step.missSignal(attempt.getAttemptNumber(), now);
+        log.info("Signal {} of run {} missed its deadline", step.getName(), step.getRun().getId());
         recordTimings(step);
         announceReadySteps(step.getRun(), now);
     }

@@ -1,6 +1,8 @@
 package io.github.louaychayeb.flowforge.orchestrator.run;
 
 import io.github.louaychayeb.flowforge.orchestrator.definition.StepDefinition;
+import io.github.louaychayeb.flowforge.orchestrator.definition.WorkflowDefinition;
+import io.github.louaychayeb.flowforge.orchestrator.error.OperationNotAllowedException;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -182,7 +184,42 @@ public class StepExecution {
 
     /** A built-in timer: the orchestrator completes it itself when it comes due, no worker involved. */
     public boolean isTimer() {
-        return waitMillis != null;
+        return kind == StepKind.FORWARD && WorkflowDefinition.WAIT.equals(stepType);
+    }
+
+    /**
+     * A built-in signal step: completed by a signal delivered through the API. Its {@code nextAttemptAt} is the
+     * deadline; when the dispatcher claims it, no signal came in time.
+     */
+    public boolean isSignal() {
+        return kind == StepKind.FORWARD && WorkflowDefinition.SIGNAL.equals(stepType);
+    }
+
+    /** Eligible and waiting for its signal: the only time a signal is accepted. */
+    public boolean isAwaitingSignal() {
+        return isSignal() && status == StepStatus.PENDING && nextAttemptAt != null;
+    }
+
+    /**
+     * Completes a waiting signal step with the signal's payload as its output, in one move: an attempt opens and
+     * succeeds at the same instant. The run then goes on as after any completed step.
+     *
+     * @throws OperationNotAllowedException if the step is not waiting for a signal right now (its dependencies are
+     *         still running, it was already signalled, it timed out, or the run is winding down)
+     */
+    public void deliverSignal(Map<String, Object> payload, Instant now) {
+        if (!isAwaitingSignal()) {
+            throw new OperationNotAllowedException("Step %s is not waiting for a signal (it is %s%s)".formatted(name,
+                    status, status == StepStatus.PENDING ? ", not yet due" : ""),
+                    Map.of("step", name, "stepStatus", status));
+        }
+        StepAttempt attempt = start(now, Duration.ZERO);
+        complete(attempt.getAttemptNumber(), payload, now);
+    }
+
+    /** The deadline passed without a signal: the step fails for good, and the run compensates what it completed. */
+    public void missSignal(int attemptNumber, Instant now) {
+        failPermanently(attemptNumber, "No signal " + name + " within " + Duration.ofMillis(waitMillis), now);
     }
 
     /**

@@ -22,7 +22,8 @@ public class OperatorAction {
 
     public enum Type {
         CANCEL,
-        RETRY_COMPENSATION
+        RETRY_COMPENSATION,
+        SIGNAL
     }
 
     @Id

@@ -30,5 +30,11 @@ public abstract class NotFoundException extends FlowForgeException {
             super(ErrorCode.STEP_NOT_FOUND, "Step execution " + stepExecutionId + " not found",
                     Map.of("stepExecutionId", stepExecutionId));
         }
+
+        /** A run has no step of that name (of the kind asked for, e.g. no signal step). */
+        public StepNotFound(UUID runId, String stepName) {
+            super(ErrorCode.STEP_NOT_FOUND, "Run " + runId + " has no signal step " + stepName,
+                    Map.of("runId", runId, "step", stepName));
+        }
     }
 }

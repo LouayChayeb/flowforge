@@ -115,7 +115,7 @@ public class ConsistencyChecker {
                     JOIN step_attempt first_try ON first_try.step_execution_id = s.id AND first_try.attempt_number = 1
                     JOIN workflow_run r ON r.id = s.workflow_run_id
                     """ + SCOPE + """
-                      AND s.wait_millis IS NOT NULL
+                      AND s.step_type = 'WAIT' AND s.kind = 'FORWARD'
                       AND first_try.started_at < s.wait_millis * INTERVAL '1 millisecond' + coalesce(
                           (SELECT max(ok.finished_at) FROM jsonb_array_elements_text(s.depends_on) AS dep(pos)
                            JOIN step_execution dep_step ON dep_step.workflow_run_id = s.workflow_run_id
@@ -172,7 +172,7 @@ public class ConsistencyChecker {
                     """),
             new Invariant("command-for-every-attempt",
                     "Every attempt of a worker step has its command in the outbox (the claim and the command commit "
-                            + "together); timers run in the orchestrator and send none",
+                            + "together); timers and signals run in the orchestrator and send none",
                     """
                     SELECT a.id::text FROM step_attempt a
                     JOIN step_execution s ON s.id = a.step_execution_id

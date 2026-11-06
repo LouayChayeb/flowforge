@@ -36,6 +36,8 @@ public final class TestStepHandlers {
     public static final String PRODUCE = "TEST_PRODUCE";
     /** Succeeds with output {@code {"echo": <producedBy of step "producer">}}; fails permanently if it is missing. */
     public static final String CONSUME = "TEST_CONSUME";
+    /** Succeeds with output {@code {"echo": <producedBy of the signal step "approval">}}: reads a signal's payload. */
+    public static final String CONSUME_APPROVAL = "TEST_CONSUME_APPROVAL";
     /** A compensation that fails permanently until {@link #UNDO_ALLOWED} is set, for testing operator retries. */
     public static final String UNDO_WHEN_ALLOWED = "TEST_UNDO_WHEN_ALLOWED";
 
@@ -64,6 +66,8 @@ public final class TestStepHandlers {
                         Map.of("producedBy", context.stepName(), "attempt", context.attempt()))),
                 handler(CONSUME, context -> StepHandlerResult.succeeded(
                         Map.of("echo", context.requireOutput("producer", "producedBy")))),
+                handler(CONSUME_APPROVAL, context -> StepHandlerResult.succeeded(
+                        Map.of("echo", context.requireOutput("approval", "producedBy")))),
                 handler(UNDO_WHEN_ALLOWED, context -> {
                     if (!UNDO_ALLOWED.get()) {
                         throw new StepFailureException.Permanent("undo refused");

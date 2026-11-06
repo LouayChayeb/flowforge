@@ -31,7 +31,8 @@ public class WorkflowDefinitionService {
      * @param compensationType step type that undoes this step if the run fails later; {@code null} if none
      * @param dependsOn        names of earlier steps this one waits for; {@code null} means the step before it (the
      *                         classic sequential workflow), an empty list means it can start immediately
-     * @param waitFor          for the built-in {@code WAIT} type only: how long the timer waits
+     * @param waitFor          for the built-in types only: how long a {@code WAIT} timer waits, or how long a
+     *                         {@code SIGNAL} step waits at most for its signal
      */
     public record NewStep(String name, String type, Integer maxAttempts, String compensationType,
                           List<String> dependsOn, Duration waitFor) {
@@ -52,6 +53,11 @@ public class WorkflowDefinitionService {
         /** A durable timer step. */
         public static NewStep timer(String name, Duration wait, List<String> dependsOn) {
             return new NewStep(name, WorkflowDefinition.WAIT, 1, null, dependsOn, wait);
+        }
+
+        /** A step that waits up to {@code timeout} for the signal named after it. */
+        public static NewStep signal(String name, Duration timeout, List<String> dependsOn) {
+            return new NewStep(name, WorkflowDefinition.SIGNAL, 1, null, dependsOn, timeout);
         }
     }
 
@@ -76,6 +82,8 @@ public class WorkflowDefinitionService {
                     : step.dependsOn().stream().map(positions::get).toList();
             if (WorkflowDefinition.WAIT.equals(step.type())) {
                 definition.addTimer(step.name(), step.waitFor(), dependsOn);
+            } else if (WorkflowDefinition.SIGNAL.equals(step.type())) {
+                definition.addSignal(step.name(), step.waitFor(), dependsOn);
             } else {
                 int maxAttempts = step.maxAttempts() == null ? DEFAULT_MAX_ATTEMPTS : step.maxAttempts();
                 definition.addStep(step.name(), step.type(), maxAttempts, step.compensationType(), dependsOn);
@@ -111,7 +119,7 @@ public class WorkflowDefinitionService {
         Set<String> names = new HashSet<>();
         for (NewStep step : steps) {
             validateDependencies(step, names);
-            validateTimer(step);
+            validateBuiltIn(step);
             if (!names.add(step.name())) {
                 throw new InvalidWorkflowDefinitionException("Duplicate step name " + step.name(), step.name());
             }
@@ -139,25 +147,27 @@ public class WorkflowDefinitionService {
         }
     }
 
-    private static void validateTimer(NewStep step) {
-        boolean timer = WorkflowDefinition.WAIT.equals(step.type());
-        if (!timer) {
+    /** The built-in types, WAIT and SIGNAL, need a wait (a signal's deadline); no other step may have one. */
+    private static void validateBuiltIn(NewStep step) {
+        String type = step.type();
+        boolean builtIn = WorkflowDefinition.WAIT.equals(type) || WorkflowDefinition.SIGNAL.equals(type);
+        if (!builtIn) {
             if (step.waitFor() != null) {
-                throw new InvalidWorkflowDefinitionException("Only WAIT steps can have a wait, not " + step.name(),
-                        step.name());
+                throw new InvalidWorkflowDefinitionException("Only WAIT and SIGNAL steps can have a wait, not "
+                        + step.name(), step.name());
             }
             return;
         }
         if (step.waitFor() == null || step.waitFor().isZero() || step.waitFor().isNegative()) {
-            throw new InvalidWorkflowDefinitionException("WAIT step " + step.name() + " needs a positive wait",
-                    step.name());
+            throw new InvalidWorkflowDefinitionException(type + " step " + step.name() + " needs a positive "
+                    + (WorkflowDefinition.SIGNAL.equals(type) ? "deadline (waitFor)" : "wait"), step.name());
         }
         if (step.waitFor().compareTo(MAX_WAIT) > 0) {
-            throw new InvalidWorkflowDefinitionException("WAIT step " + step.name() + " waits longer than "
+            throw new InvalidWorkflowDefinitionException(type + " step " + step.name() + " waits longer than "
                     + MAX_WAIT.toDays() + " days", step.name());
         }
         if (step.compensationType() != null) {
-            throw new InvalidWorkflowDefinitionException("WAIT step " + step.name() + " has nothing to compensate",
+            throw new InvalidWorkflowDefinitionException(type + " step " + step.name() + " has nothing to compensate",
                     step.name());
         }
     }

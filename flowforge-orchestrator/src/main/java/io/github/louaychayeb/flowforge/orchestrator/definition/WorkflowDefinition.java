@@ -81,10 +81,28 @@ public class WorkflowDefinition {
     public static final String WAIT = "WAIT";
 
     /**
+     * The built-in step type for signals: completed when an event from outside arrives through the API (an approval,
+     * a webhook), carrying its payload as the step's output; failed if none arrives within its wait.
+     */
+    public static final String SIGNAL = "SIGNAL";
+
+    /**
      * Adds a durable timer: a step that completes {@code wait} after its dependencies did. No worker runs it, and it
      * has nothing to undo.
      */
     public void addTimer(String stepName, Duration wait, List<Integer> dependsOn) {
+        addBuiltIn(stepName, WAIT, wait, dependsOn);
+    }
+
+    /**
+     * Adds a signal step: once its dependencies complete, it waits up to {@code timeout} for the signal named after
+     * it. No worker runs it, and it has nothing to undo; a missed deadline fails it like any permanent failure.
+     */
+    public void addSignal(String stepName, Duration timeout, List<Integer> dependsOn) {
+        addBuiltIn(stepName, SIGNAL, timeout, dependsOn);
+    }
+
+    private void addBuiltIn(String stepName, String type, Duration wait, List<Integer> dependsOn) {
         int position = steps.size();
         for (int dependency : dependsOn) {
             if (dependency < 0 || dependency >= position) {
@@ -93,9 +111,9 @@ public class WorkflowDefinition {
             }
         }
         if (wait == null || wait.isZero() || wait.isNegative()) {
-            throw new IllegalArgumentException("Timer " + stepName + " needs a positive wait");
+            throw new IllegalArgumentException(type + " step " + stepName + " needs a positive wait");
         }
-        steps.add(new StepDefinition(this, position, stepName, WAIT, 1, null,
+        steps.add(new StepDefinition(this, position, stepName, type, 1, null,
                 dependsOn.stream().distinct().sorted().toList(), wait));
     }
 

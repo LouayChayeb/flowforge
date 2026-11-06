@@ -12,6 +12,8 @@ FlowForge is a compact, explicit take on the durable-execution model used by wor
 - leases, retries with backoff, and recovery after process failure
 - saga-style compensation for partially completed business operations
 
+![The live dashboard under load: every step goes round the numbered loop, with beams on the edges carrying traffic and Kafka messages in flight](docs/images/live.png)
+
 > **Status:** All five phases complete, plus parallel steps, instant dispatch, an idempotent payment provider and end-to-end tracing. It runs on Kubernetes from a Helm chart and handles 30–40 five-step workflow runs per second (up to 200 step executions/s) on a single 6-CPU Minikube node; at light load a run takes about 0.34 s from request to completion — see [performance](docs/performance.md). Commands go through a transactional outbox, running steps hold leases, failed runs are compensated, and a [consistency checker](docs/correctness.md) verifies ten invariants of the execution history. They hold under a stress test with concurrent engine instances, duplicated and late messages, and lease races, and in a live run with two orchestrators, three workers and a killed worker. See the [crash-recovery demo](docs/recovery-demo.md) and the [roadmap](#roadmap).
 
 ---
@@ -66,6 +68,18 @@ The orchestrator serves a live dashboard at its root, **http://localhost:8080/**
 - **Engine** — counters, leases and retry backoffs in progress, database totals, the ten invariants checked every 5 s, the payment provider's ledger (duplicates absorbed, orders charged twice: 0), and the configuration the instance runs with.
 - **Kafka** — which consumer owns which partition, committed offsets and lag, and a guide to killing a worker and watching its partitions move.
 - **Learn** — the life of an order, failure modes and what handles them, the guarantees, a searchable map of every class, and a glossary.
+
+**A run that compensated.** The fraud check failed while its parallel sibling had already reserved stock, so the engine waited for the sibling and then undid it:
+
+![Run detail: the run's state machine, steps laid out by dependency with their outputs, and the undo lane](docs/images/run.png)
+
+**Where a run's time went.** Shipping timed out twice; the hatched stretches are retry backoffs, during which the run holds no worker and no thread:
+
+![Waterfall of a run whose shipment needed three attempts](docs/images/waterfall.png)
+
+**Correctness, live.** Every 5 s the ten invariants are checked against the stored history:
+
+![Engine tab: counters and the ten invariants](docs/images/engine.png)
 
 "Take the tour" walks through it; "Guide mode" shows the explanations everywhere; <kbd>Ctrl</kbd> <kbd>K</kbd> opens a command palette (views, recent runs, scenarios) and <kbd>?</kbd> lists the keyboard shortcuts. Light and dark themes, and it works on a phone.
 

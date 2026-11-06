@@ -1,0 +1,205 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+    --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+    --color-s-running: var(--s-running);
+    --color-s-pending: var(--s-pending);
+    --color-s-retry: var(--s-retry);
+    --color-s-completed: var(--s-completed);
+    --color-s-failed: var(--s-failed);
+    --color-s-compensating: var(--s-compensating);
+    --color-s-compensated: var(--s-compensated);
+    --color-s-compfailed: var(--s-compfailed);
+    --color-s-timedout: var(--s-timedout);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+    --animate-shine: shine var(--duration) infinite linear;
+  @keyframes shine {
+  0% {
+    background-position: 0% 0%;
+        }
+  50% {
+    background-position: 100% 100%;
+        }
+  to {
+    background-position: 0% 0%;
+        }
+    }
+}
+
+:root {
+    /* step / run / attempt status colours, shared by badges, cards, charts and diagrams */
+    --s-running: #1c7ed6;
+    --s-pending: #868e96;
+    --s-retry: #e8890c;
+    --s-completed: #2b8a3e;
+    --s-failed: #c92a2a;
+    --s-compensating: #d9480f;
+    --s-compensated: #7048e8;
+    --s-compfailed: #a61e4d;
+    --s-timedout: #e8590c;
+
+    --background: oklch(0.985 0.002 264);
+    --foreground: oklch(0.18 0.02 264);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.18 0.02 264);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.18 0.02 264);
+    --primary: oklch(0.52 0.22 272);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+    --s-running: #4dabf7;
+    --s-pending: #9aa6b2;
+    --s-retry: #ffa94d;
+    --s-completed: #51cf66;
+    --s-failed: #ff6b6b;
+    --s-compensating: #ff922b;
+    --s-compensated: #9775fa;
+    --s-compfailed: #f06595;
+    --s-timedout: #ff8787;
+
+    --background: oklch(0.145 0.012 268);
+    --foreground: oklch(0.97 0.005 264);
+    --card: oklch(0.185 0.015 268);
+    --card-foreground: oklch(0.97 0.005 264);
+    --popover: oklch(0.2 0.016 268);
+    --popover-foreground: oklch(0.97 0.005 264);
+    --primary: oklch(0.7 0.16 276);
+    --primary-foreground: oklch(0.16 0.02 268);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground antialiased;
+    }
+  html {
+    @apply font-sans;
+    }
+  code {
+    @apply font-mono text-[0.85em] rounded bg-muted px-1 py-px;
+    }
+}
+
+/* Rich text from knowledge.js (explanations written as small HTML snippets). */
+.prose-ff b { @apply font-semibold text-foreground; }
+.prose-ff i { @apply italic; }
+.prose-ff p + p { @apply mt-2; }
+
+/* waterfall: a running attempt is striped and moves; deliberate waiting is hatched */
+.seg-live {
+  background: repeating-linear-gradient(45deg, var(--c) 0 6px, color-mix(in srgb, var(--c) 55%, transparent) 6px 12px);
+  background-size: 17px 17px;
+  animation: seg-live 0.8s linear infinite;
+}
+.seg-wait {
+  border: 1px dashed color-mix(in srgb, var(--s-retry) 75%, transparent);
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--s-retry) 40%, transparent) 0 3px, transparent 3px 7px);
+}
+@keyframes seg-live { to { background-position: 17px 0; } }
+
+.live-dot { position: relative; }
+.live-dot::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 9999px; border: 2px solid currentColor;
+  animation: live-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite; opacity: 0;
+}
+@keyframes live-ping { 0% { transform: scale(.6); opacity: .8; } 80%, 100% { transform: scale(1.8); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .seg-live, .live-dot::after { animation: none; }
+}
